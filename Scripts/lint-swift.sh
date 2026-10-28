@@ -1,0 +1,51 @@
+#!/bin/sh
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+swift_format_configuration=".swift-format"
+swiftlint_configuration=".swiftlint.yml"
+swiftlint_cache_directory=".cache/swiftlint"
+
+. "scripts/swift-paths.sh"
+
+default_paths="$(resolve_swift_paths)"
+
+if ! command -v swift >/dev/null 2>&1; then
+  echo "lint-swift: 'swift' command not found." >&2
+  exit 1
+fi
+
+if [ ! -f "$swift_format_configuration" ]; then
+  echo "lint-swift: missing $swift_format_configuration in repository root." >&2
+  exit 1
+fi
+
+if [ ! -f "$swiftlint_configuration" ]; then
+  echo "lint-swift: missing $swiftlint_configuration in repository root." >&2
+  exit 1
+fi
+
+if ! command -v swiftlint >/dev/null 2>&1; then
+  echo "lint-swift: 'swiftlint' is not installed. Install it with 'brew install swiftlint'." >&2
+  exit 1
+fi
+
+if [ -z "$default_paths" ]; then
+  echo "lint-swift: no Swift source roots were found for the current repository layout." >&2
+  exit 1
+fi
+
+mkdir -p "$swiftlint_cache_directory"
+export SWIFTLINT_CACHE_PATH="$repo_root/$swiftlint_cache_directory"
+
+swift format lint \
+  --strict \
+  --configuration "$swift_format_configuration" \
+  -r \
+  $default_paths
+
+swiftlint lint \
+  --no-cache \
+  --config "$swiftlint_configuration"
