@@ -6,7 +6,7 @@ public struct VideoEditorPlaybackTimelineContainerView<PlayButton: View, Timelin
     // MARK: - Body
 
     public var body: some View {
-        HStack(spacing: 32) {
+        HStack(spacing: 12) {
             playButton()
                 .padding(.top, 8)
 
@@ -14,7 +14,7 @@ public struct VideoEditorPlaybackTimelineContainerView<PlayButton: View, Timelin
                 timeline()
                 footer()
             }
-            .padding(.trailing, 8)
+            .padding(.trailing, 12)
         }
     }
 
