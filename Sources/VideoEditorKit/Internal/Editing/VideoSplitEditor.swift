@@ -136,6 +136,18 @@ enum VideoSplitEditor {
             .reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
     }
 
+    /// Removed source seconds inside `trim` that lie before `sourceTime`.
+    static func removedDuration(
+        before sourceTime: Double,
+        trim: ClosedRange<Double>,
+        removedRanges: [ClosedRange<Double>]
+    ) -> Double {
+        effectiveRemovedRanges(trim: trim, removedRanges: removedRanges)
+            .reduce(0) { total, range in
+                total + max(min(range.upperBound, sourceTime) - range.lowerBound, 0)
+            }
+    }
+
     /// Where playback should jump when it enters a removed range, or `nil` when it should not.
     static func skipTarget(
         for sourceTime: Double,
