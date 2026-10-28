@@ -234,6 +234,23 @@ struct Video: Identifiable, @unchecked Sendable {
         return true
     }
 
+    @discardableResult
+    mutating func moveSplitPoint(from point: Double, to newTime: Double) -> Bool {
+        guard
+            let move = VideoSplitEditor.movingSplitPoint(
+                point,
+                to: newTime,
+                trim: rangeDuration,
+                splitPoints: splitPoints,
+                removedRanges: removedRanges
+            )
+        else { return false }
+
+        splitPoints = move.splitPoints
+        removedRanges = move.removedRanges
+        return true
+    }
+
     mutating func restoreRemovedSegments() {
         removedRanges = []
     }
