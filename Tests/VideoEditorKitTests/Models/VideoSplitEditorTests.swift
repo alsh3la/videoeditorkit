@@ -67,6 +67,15 @@ struct VideoSplitEditorTests {
     }
 
     @Test
+    func removedDurationBeforeCountsOnlyDeletedTimeAheadOfThePoint() {
+        let removed = [5.0...12.0, 15.0...18.0]
+
+        #expect(abs(VideoSplitEditor.removedDuration(before: 3, trim: 0...20, removedRanges: removed)) < 0.0001)
+        #expect(abs(VideoSplitEditor.removedDuration(before: 8, trim: 0...20, removedRanges: removed) - 3) < 0.0001)
+        #expect(abs(VideoSplitEditor.removedDuration(before: 20, trim: 0...20, removedRanges: removed) - 10) < 0.0001)
+    }
+
+    @Test
     @MainActor
     func videoTotalDurationExcludesRemovedSegments() {
         var video = Video.mock
