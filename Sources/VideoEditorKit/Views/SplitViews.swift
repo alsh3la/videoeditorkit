@@ -43,8 +43,8 @@ struct SplitToolbar: View {
             hapticTrigger: editor.splitRevision
         ) {
             withAnimation(.snappy(duration: 0.25)) {
-                editor.splitAtPlayhead()
-            }
+    _ = editor.splitAtPlayhead()
+}
         }
     }
 }
