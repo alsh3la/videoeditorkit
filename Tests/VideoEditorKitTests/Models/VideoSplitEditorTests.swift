@@ -67,6 +67,33 @@ struct VideoSplitEditorTests {
     }
 
     @Test
+    func restoringSegmentBringsBackOnlyThePartUnderThePoint() {
+        let remaining = VideoSplitEditor.restoringSegment(
+            containing: 8, trim: 0...20, splitPoints: [5, 12], removedRanges: [5...20])
+
+        #expect(remaining == [12...20])
+        #expect(
+            VideoSplitEditor.restoringSegment(
+                containing: 2, trim: 0...20, splitPoints: [5, 12], removedRanges: [5...20]) == nil)
+    }
+
+    @Test
+    func joiningSegmentRemovesTheSplitPointBetweenMatchingParts() {
+        #expect(
+            VideoSplitEditor.joiningSegment(
+                containing: 2, trim: 0...20, splitPoints: [5, 12], removedRanges: []) == [12])
+        #expect(
+            VideoSplitEditor.joiningSegment(
+                containing: 15, trim: 0...20, splitPoints: [5, 12], removedRanges: []) == [5])
+        #expect(
+            VideoSplitEditor.joiningSegment(
+                containing: 2, trim: 0...20, splitPoints: [5, 12], removedRanges: [5...12]) == nil)
+        #expect(
+            VideoSplitEditor.joiningSegment(
+                containing: 2, trim: 0...20, splitPoints: [], removedRanges: []) == nil)
+    }
+
+    @Test
     func removedDurationBeforeCountsOnlyDeletedTimeAheadOfThePoint() {
         let removed = [5.0...12.0, 15.0...18.0]
 
