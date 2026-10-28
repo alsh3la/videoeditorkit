@@ -104,6 +104,66 @@ enum VideoSplitEditor {
         return normalized(removedRanges + [segment])
     }
 
+    /// Result of moving one split point.
+    struct SplitPointMove: Equatable {
+        /// Split points after the move.
+        let splitPoints: [Double]
+        /// Removed ranges after their edges followed the moved point.
+        let removedRanges: [ClosedRange<Double>]
+        /// Where the point ended up after limits were applied.
+        let point: Double
+    }
+
+    /// Moves `point` to `newTime`, keeping every part at least `minimumSegmentDuration` long.
+    /// Deleted parts that touch the point keep touching it. Returns `nil` when `point` is not a split point.
+    static func movingSplitPoint(
+        _ point: Double,
+        to newTime: Double,
+        trim: ClosedRange<Double>,
+        splitPoints: [Double],
+        removedRanges: [ClosedRange<Double>]
+    ) -> SplitPointMove? {
+        guard newTime.isFinite else { return nil }
+
+        let innerPoints =
+            splitPoints
+            .filter { $0 > trim.lowerBound + tolerance && $0 < trim.upperBound - tolerance }
+            .sorted()
+
+        guard let innerIndex = innerPoints.firstIndex(where: { abs($0 - point) <= tolerance }) else {
+            return nil
+        }
+
+        let oldPoint = innerPoints[innerIndex]
+        let previousBoundary = innerIndex > 0 ? innerPoints[innerIndex - 1] : trim.lowerBound
+        let nextBoundary =
+            innerIndex + 1 < innerPoints.count ? innerPoints[innerIndex + 1] : trim.upperBound
+        let lowerLimit = previousBoundary + minimumSegmentDuration
+        let upperLimit = nextBoundary - minimumSegmentDuration
+
+        guard lowerLimit <= upperLimit else { return nil }
+
+        let movedPoint = min(max(newTime, lowerLimit), upperLimit)
+
+        var updatedPoints = splitPoints
+        guard let originalIndex = updatedPoints.firstIndex(where: { abs($0 - oldPoint) <= tolerance })
+        else { return nil }
+        updatedPoints[originalIndex] = movedPoint
+        updatedPoints.sort()
+
+        let updatedRanges = removedRanges.compactMap { range -> ClosedRange<Double>? in
+            let lower = abs(range.lowerBound - oldPoint) <= tolerance ? movedPoint : range.lowerBound
+            let upper = abs(range.upperBound - oldPoint) <= tolerance ? movedPoint : range.upperBound
+            return upper - lower > tolerance ? lower...upper : nil
+        }
+
+        return SplitPointMove(
+            splitPoints: updatedPoints,
+            removedRanges: normalized(updatedRanges),
+            point: movedPoint
+        )
+    }
+
     /// Returns the removed ranges after bringing back only the deleted part under `sourceTime`.
     /// Returns `nil` when that part is not deleted.
     static func restoringSegment(
