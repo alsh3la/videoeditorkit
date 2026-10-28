@@ -1,0 +1,950 @@
+diff -ruN a/Sources/VideoEditorKit/Editing/VideoEditingConfiguration.swift b/Sources/VideoEditorKit/Editing/VideoEditingConfiguration.swift
+--- a/Sources/VideoEditorKit/Editing/VideoEditingConfiguration.swift	2026-10-28 05:38:37.093189276 +0000
++++ b/Sources/VideoEditorKit/Editing/VideoEditingConfiguration.swift	2026-10-28 05:38:37.094409220 +0000
+@@ -17,6 +17,8 @@
+     public var version = Self.currentSchemaVersion.rawValue
+     /// Trim bounds stored in source timeline seconds.
+     public var trim = Trim()
++    /// Split points and removed segments stored in source timeline seconds.
++    public var split = Split()
+     /// Playback-related state such as rate and current timeline position.
+     public var playback = Playback()
+     /// Crop-related state such as rotation, mirroring, and freeform rect.
+@@ -46,6 +48,7 @@
+     private enum CodingKeys: String, CodingKey {
+         case version
+         case trim
++        case split
+         case playback
+         case crop
+         case canvas
+@@ -61,6 +64,7 @@
+     public init(
+         version: Int = Self.currentSchemaVersion.rawValue,
+         trim: Trim = .init(),
++        split: Split = .init(),
+         playback: Playback = .init(),
+         crop: Crop = .init(),
+         canvas: Canvas = .init(),
+@@ -72,6 +76,7 @@
+     ) {
+         self.version = version
+         self.trim = trim
++        self.split = split
+         self.playback = playback
+         self.crop = crop
+         self.canvas = canvas
+@@ -106,6 +111,9 @@
+         var container = encoder.container(keyedBy: CodingKeys.self)
+         try container.encode(Self.currentSchemaVersion.rawValue, forKey: .version)
+         try container.encode(trim, forKey: .trim)
++        if split != Split() {
++            try container.encode(split, forKey: .split)
++        }
+         try container.encode(playback, forKey: .playback)
+         try container.encode(crop, forKey: .crop)
+         try container.encode(canvas, forKey: .canvas)
+@@ -127,6 +135,7 @@
+         self.init(
+             version: version,
+             trim: try container.decodeIfPresent(Trim.self, forKey: .trim) ?? .init(),
++            split: try container.decodeIfPresent(Split.self, forKey: .split) ?? .init(),
+             playback: try container.decodeIfPresent(Playback.self, forKey: .playback) ?? .init(),
+             crop: try container.decodeIfPresent(Crop.self, forKey: .crop) ?? .init(),
+             canvas: try container.decodeIfPresent(Canvas.self, forKey: .canvas) ?? .init(),
+@@ -193,6 +202,48 @@
+         ) {
+             self.lowerBound = lowerBound
+             self.upperBound = upperBound
++        }
++
++    }
++
++    /// Split points and deleted segments, in source timeline seconds.
++    public struct Split: Codable, Equatable, Sendable {
++
++        // MARK: - Public Properties
++
++        /// Ordered cut positions inside the trim range.
++        public var splitPoints: [Double] = []
++        /// Segments removed from preview and export.
++        public var removedRanges: [RemovedRange] = []
++
++        // MARK: - Initializer
++
++        public init(
++            splitPoints: [Double] = [],
++            removedRanges: [RemovedRange] = []
++        ) {
++            self.splitPoints = splitPoints
++            self.removedRanges = removedRanges
++        }
++
++    }
++
++    /// A deleted source segment.
++    public struct RemovedRange: Codable, Equatable, Sendable {
++
++        // MARK: - Public Properties
++
++        public var lowerBound: Double
++        public var upperBound: Double
++
++        // MARK: - Initializer
++
++        public init(
++            lowerBound: Double,
++            upperBound: Double
++        ) {
++            self.lowerBound = lowerBound
++            self.upperBound = upperBound
+         }
+ 
+     }
+diff -ruN a/Sources/VideoEditorKit/Internal/Editing/EditorPlaybackEditingCoordinator.swift b/Sources/VideoEditorKit/Internal/Editing/EditorPlaybackEditingCoordinator.swift
+--- a/Sources/VideoEditorKit/Internal/Editing/EditorPlaybackEditingCoordinator.swift	2026-10-28 05:38:37.150852909 +0000
++++ b/Sources/VideoEditorKit/Internal/Editing/EditorPlaybackEditingCoordinator.swift	2026-10-28 05:38:37.151963679 +0000
+@@ -31,6 +31,7 @@
+         let isTrimmed =
+             video.rangeDuration.lowerBound > 0
+             || abs(video.rangeDuration.upperBound - video.originalDuration) > tolerance
++            || video.hasSplitEdits
+ 
+         if isTrimmed {
+             video.appliedTool(for: .cut)
+diff -ruN a/Sources/VideoEditorKit/Internal/Editing/VideoEditingConfigurationMapper.swift b/Sources/VideoEditorKit/Internal/Editing/VideoEditingConfigurationMapper.swift
+--- a/Sources/VideoEditorKit/Internal/Editing/VideoEditingConfigurationMapper.swift	2026-10-28 05:38:37.164291251 +0000
++++ b/Sources/VideoEditorKit/Internal/Editing/VideoEditingConfigurationMapper.swift	2026-10-28 05:38:37.165356533 +0000
+@@ -29,6 +29,12 @@
+                 lowerBound: video.rangeDuration.lowerBound,
+                 upperBound: video.rangeDuration.upperBound
+             ),
++            split: .init(
++                splitPoints: video.splitPoints,
++                removedRanges: video.removedRanges.map {
++                    .init(lowerBound: $0.lowerBound, upperBound: $0.upperBound)
++                }
++            ),
+             playback: .init(
+                 rate: video.rate,
+                 videoVolume: video.volume,
+@@ -85,6 +91,10 @@
+         to video: inout Video
+     ) {
+         video.rangeDuration = configuration.trim.lowerBound...configuration.trim.upperBound
++        video.splitPoints = configuration.split.splitPoints
++        video.removedRanges = configuration.split.removedRanges.compactMap {
++            $0.upperBound > $0.lowerBound ? $0.lowerBound...$0.upperBound : nil
++        }
+         video.updateRate(configuration.playback.rate)
+         video.setVolume(configuration.playback.videoVolume)
+         video.rotation = configuration.crop.rotationDegrees
+@@ -136,6 +146,7 @@
+         let isTrimmed =
+             video.rangeDuration.lowerBound > 0
+             || abs(video.rangeDuration.upperBound - video.originalDuration) > 0.001
++            || video.hasSplitEdits
+         if isTrimmed {
+             restoredTools.append(.cut)
+         }
+diff -ruN a/Sources/VideoEditorKit/Internal/Editing/VideoSplitEditor.swift b/Sources/VideoEditorKit/Internal/Editing/VideoSplitEditor.swift
+--- a/Sources/VideoEditorKit/Internal/Editing/VideoSplitEditor.swift	1970-01-01 00:00:00.000000000 +0000
++++ b/Sources/VideoEditorKit/Internal/Editing/VideoSplitEditor.swift	2026-10-28 05:38:37.159648612 +0000
+@@ -0,0 +1,167 @@
++//
++//  VideoSplitEditor.swift
++//  VideoEditorKit
++//
++
++import Foundation
++
++/// Pure helpers for the split tool.
++///
++/// All values are expressed in source-video seconds (not rate-scaled timeline seconds).
++/// A video is divided into segments by `splitPoints` inside the current trim range.
++/// Deleted segments are stored as `removedRanges` and are skipped by preview and export.
++enum VideoSplitEditor {
++
++    // MARK: - Public Properties
++
++    /// Shortest segment a split is allowed to create.
++    static let minimumSegmentDuration = 0.2
++
++    // MARK: - Private Properties
++
++    private static let tolerance = 0.001
++
++    // MARK: - Public Methods
++
++    /// Returns the ordered segments produced by `splitPoints` inside `trim`.
++    static func segments(
++        in trim: ClosedRange<Double>,
++        splitPoints: [Double]
++    ) -> [ClosedRange<Double>] {
++        guard trim.upperBound > trim.lowerBound else { return [] }
++
++        let innerPoints =
++            splitPoints
++            .filter { $0 > trim.lowerBound + tolerance && $0 < trim.upperBound - tolerance }
++            .sorted()
++        let boundaries = [trim.lowerBound] + innerPoints + [trim.upperBound]
++
++        return zip(boundaries, boundaries.dropFirst()).compactMap { lower, upper in
++            upper - lower > tolerance ? lower...upper : nil
++        }
++    }
++
++    /// Returns a new list of split points when `sourceTime` is a valid place to split.
++    static func splitting(
++        at sourceTime: Double,
++        trim: ClosedRange<Double>,
++        splitPoints: [Double],
++        removedRanges: [ClosedRange<Double>]
++    ) -> [Double]? {
++        guard sourceTime.isFinite else { return nil }
++        guard !isRemoved(sourceTime, in: removedRanges) else { return nil }
++        guard
++            let segment = segments(in: trim, splitPoints: splitPoints)
++                .first(where: { sourceTime >= $0.lowerBound && sourceTime < $0.upperBound })
++        else { return nil }
++
++        guard
++            sourceTime - segment.lowerBound >= minimumSegmentDuration,
++            segment.upperBound - sourceTime >= minimumSegmentDuration
++        else { return nil }
++
++        return (splitPoints + [sourceTime]).sorted()
++    }
++
++    /// Returns the segment that contains `sourceTime`, if any.
++    static func segment(
++        containing sourceTime: Double,
++        in trim: ClosedRange<Double>,
++        splitPoints: [Double]
++    ) -> ClosedRange<Double>? {
++        let allSegments = segments(in: trim, splitPoints: splitPoints)
++        let clampedTime = min(max(sourceTime, trim.lowerBound), trim.upperBound)
++
++        return allSegments.first(where: {
++            clampedTime >= $0.lowerBound && clampedTime < $0.upperBound
++        }) ?? allSegments.last
++    }
++
++    /// Returns the removed ranges after deleting the segment under `sourceTime`.
++    /// Returns `nil` when the segment is already removed or is the last remaining segment.
++    static func removingSegment(
++        containing sourceTime: Double,
++        trim: ClosedRange<Double>,
++        splitPoints: [Double],
++        removedRanges: [ClosedRange<Double>]
++    ) -> [ClosedRange<Double>]? {
++        guard
++            let segment = segment(
++                containing: sourceTime,
++                in: trim,
++                splitPoints: splitPoints
++            )
++        else { return nil }
++
++        let midpoint = (segment.lowerBound + segment.upperBound) / 2
++        guard !isRemoved(midpoint, in: removedRanges) else { return nil }
++
++        let keptSegmentCount = segments(in: trim, splitPoints: splitPoints)
++            .filter { !isRemoved(($0.lowerBound + $0.upperBound) / 2, in: removedRanges) }
++            .count
++        guard keptSegmentCount > 1 else { return nil }
++
++        return normalized(removedRanges + [segment])
++    }
++
++    static func isRemoved(
++        _ sourceTime: Double,
++        in removedRanges: [ClosedRange<Double>]
++    ) -> Bool {
++        removedRanges.contains {
++            sourceTime >= $0.lowerBound - tolerance && sourceTime < $0.upperBound - tolerance
++        }
++    }
++
++    /// Removed ranges clipped to `trim`, sorted and merged.
++    static func effectiveRemovedRanges(
++        trim: ClosedRange<Double>,
++        removedRanges: [ClosedRange<Double>]
++    ) -> [ClosedRange<Double>] {
++        let clipped = removedRanges.compactMap { range -> ClosedRange<Double>? in
++            let lower = max(range.lowerBound, trim.lowerBound)
++            let upper = min(range.upperBound, trim.upperBound)
++            return upper - lower > tolerance ? lower...upper : nil
++        }
++
++        return normalized(clipped)
++    }
++
++    /// Total removed source seconds inside `trim`.
++    static func removedDuration(
++        trim: ClosedRange<Double>,
++        removedRanges: [ClosedRange<Double>]
++    ) -> Double {
++        effectiveRemovedRanges(trim: trim, removedRanges: removedRanges)
++            .reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
++    }
++
++    /// Where playback should jump when it enters a removed range, or `nil` when it should not.
++    static func skipTarget(
++        for sourceTime: Double,
++        removedRanges: [ClosedRange<Double>]
++    ) -> Double? {
++        removedRanges.first(where: {
++            sourceTime >= $0.lowerBound - tolerance && sourceTime < $0.upperBound - tolerance
++        })?.upperBound
++    }
++
++    // MARK: - Private Methods
++
++    private static func normalized(
++        _ ranges: [ClosedRange<Double>]
++    ) -> [ClosedRange<Double>] {
++        var merged = [ClosedRange<Double>]()
++
++        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
++            if let last = merged.last, range.lowerBound <= last.upperBound + tolerance {
++                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, range.upperBound)
++            } else {
++                merged.append(range)
++            }
++        }
++
++        return merged
++    }
++
++}
+diff -ruN a/Sources/VideoEditorKit/Internal/Localization/VideoEditorStrings.swift b/Sources/VideoEditorKit/Internal/Localization/VideoEditorStrings.swift
+--- a/Sources/VideoEditorKit/Internal/Localization/VideoEditorStrings.swift	2026-10-28 05:38:37.230321358 +0000
++++ b/Sources/VideoEditorKit/Internal/Localization/VideoEditorStrings.swift	2026-10-28 05:38:37.231543995 +0000
+@@ -195,6 +195,13 @@
+     // MARK: - Tools
+ 
+     static var toolCut: String { localized("editor.tool.cut.title", defaultValue: "Cut") }
++    static var splitAction: String { localized("editor.split.action.title", defaultValue: "Split") }
++    static var splitDeleteAction: String {
++        localized("editor.split.delete.title", defaultValue: "Delete")
++    }
++    static var splitRestoreAction: String {
++        localized("editor.split.restore.title", defaultValue: "Restore")
++    }
+     static var toolSpeed: String { localized("editor.tool.speed.title", defaultValue: "Speed") }
+     static var toolPresets: String { localized("editor.tool.presets.title", defaultValue: "Presets") }
+     static var toolAudio: String { localized("editor.tool.audio.title", defaultValue: "Audio") }
+diff -ruN a/Sources/VideoEditorKit/Internal/Managers/Player/VideoPlayerManager.swift b/Sources/VideoEditorKit/Internal/Managers/Player/VideoPlayerManager.swift
+--- a/Sources/VideoEditorKit/Internal/Managers/Player/VideoPlayerManager.swift	2026-10-28 05:38:37.239003856 +0000
++++ b/Sources/VideoEditorKit/Internal/Managers/Player/VideoPlayerManager.swift	2026-10-28 05:38:37.240410649 +0000
+@@ -72,6 +72,9 @@
+     private var currentDurationRange: ClosedRange<Double>?
+ 
+     @ObservationIgnored
++    private var currentRemovedRanges = [ClosedRange<Double>]()
++
++    @ObservationIgnored
+     private var currentPlaybackRate: Float = 1
+ 
+     @ObservationIgnored
+@@ -136,6 +139,7 @@
+         let referenceRate = normalizedPlaybackRate(previousRate ?? currentPlaybackRate)
+ 
+         currentDurationRange = video.outputRangeDuration
++        updateRemovedRanges(from: video)
+         currentPlaybackRate = normalizedPlaybackRate(video.rate)
+         currentOriginalDuration = max(video.originalDuration, .zero)
+ 
+@@ -203,6 +207,14 @@
+         }
+     }
+ 
++    /// Tells the player which source segments were deleted so playback skips them.
++    func updateRemovedRanges(from video: Video) {
++        currentRemovedRanges = VideoSplitEditor.effectiveRemovedRanges(
++            trim: video.rangeDuration,
++            removedRanges: video.removedRanges
++        )
++    }
++
+     func updatePlaybackRange(_ range: ClosedRange<Double>) {
+         currentDurationRange = range
+ 
+@@ -462,6 +474,10 @@
+                         return
+                     }
+ 
++                    if self.skipRemovedRangeIfNeeded(atSourcePlaybackTime: playbackTime) {
++                        return
++                    }
++
+                     switch self.scrubState {
+                     case .reset:
+                         self.currentTime = resolvedTime
+@@ -475,6 +491,33 @@
+         }
+     }
+ 
++    /// Jumps over a deleted segment. Returns `true` when the tick was consumed.
++    private func skipRemovedRangeIfNeeded(atSourcePlaybackTime playbackTime: Double) -> Bool {
++        guard
++            !currentRemovedRanges.isEmpty,
++            playbackTime.isFinite,
++            let target = VideoSplitEditor.skipTarget(
++                for: playbackTime,
++                removedRanges: currentRemovedRanges
++            )
++        else { return false }
++
++        let timelineTarget = timelineTime(fromSourceTime: target)
++
++        if let currentDurationRange, timelineTarget >= currentDurationRange.upperBound - 0.001 {
++            currentTime = currentDurationRange.upperBound
++            pause()
++            return true
++        }
++
++        seek(target, player: videoPlayer)
++        if isSetAudio {
++            seek(target, player: audioPlayer)
++        }
++        currentTime = timelineTarget
++        return true
++    }
++
+     private func registerPlaybackObserverIfNeeded() {
+         removeEndPlaybackObserver()
+ 
+diff -ruN a/Sources/VideoEditorKit/Internal/Models/Enums/VideoEditor.swift b/Sources/VideoEditorKit/Internal/Models/Enums/VideoEditor.swift
+--- a/Sources/VideoEditorKit/Internal/Models/Enums/VideoEditor.swift	2026-10-28 05:38:37.183327529 +0000
++++ b/Sources/VideoEditorKit/Internal/Models/Enums/VideoEditor.swift	2026-10-28 05:38:37.184989223 +0000
+@@ -161,13 +161,26 @@
+         onProgress: ProgressHandler?
+     ) async throws -> URL {
+         let composition = AVMutableComposition()
+-        let timeRange = getTimeRange(for: video.timelineDuration, with: video.outputRangeDuration)
+         let asset = video.asset
+ 
+         try await setTimeScaleAndAddTracks(
+             to: composition, from: asset, audio: video.audio, timeScale: Float64(video.rate),
+             videoVolume: video.volume)
+ 
++        let removedTimelineDuration = removeDeletedSegments(
++            of: video,
++            from: composition
++        )
++        let trimmedOutputRange = video.outputRangeDuration
++        let timeRange = getTimeRange(
++            for: video.timelineDuration,
++            with: trimmedOutputRange.lowerBound
++                ...max(
++                    trimmedOutputRange.lowerBound,
++                    trimmedOutputRange.upperBound - removedTimelineDuration
++                )
++        )
++
+         guard let videoTrack = try await composition.loadTracks(withMediaType: .video).first else {
+             throw ExporterError.unknow
+         }
+@@ -1893,6 +1906,34 @@
+         return image
+     }
+ 
++    /// Cuts deleted split segments out of the composition and returns the removed timeline seconds.
++    private static func removeDeletedSegments(
++        of video: Video,
++        from composition: AVMutableComposition
++    ) -> Double {
++        guard video.rate.isFinite, video.rate > 0 else { return 0 }
++
++        let rate = Double(video.rate)
++        let removedRanges = VideoSplitEditor.effectiveRemovedRanges(
++            trim: video.rangeDuration,
++            removedRanges: video.removedRanges
++        )
++        var removedTimelineDuration = 0.0
++
++        // Remove back-to-front so earlier ranges keep their original positions.
++        for range in removedRanges.reversed() {
++            let start = CMTimeMakeWithSeconds(range.lowerBound / rate, preferredTimescale: 1000)
++            let end = CMTimeMakeWithSeconds(range.upperBound / rate, preferredTimescale: 1000)
++
++            guard end > start else { continue }
++
++            composition.removeTimeRange(CMTimeRangeFromTimeToTime(start: start, end: end))
++            removedTimelineDuration += (range.upperBound - range.lowerBound) / rate
++        }
++
++        return removedTimelineDuration
++    }
++
+     private static func setTimeScaleAndAddTracks(
+         to composition: AVMutableComposition,
+         from asset: AVAsset,
+diff -ruN a/Sources/VideoEditorKit/Internal/Models/Video.swift b/Sources/VideoEditorKit/Internal/Models/Video.swift
+--- a/Sources/VideoEditorKit/Internal/Models/Video.swift	2026-10-28 05:38:37.196475569 +0000
++++ b/Sources/VideoEditorKit/Internal/Models/Video.swift	2026-10-28 05:38:37.198188260 +0000
+@@ -17,6 +17,8 @@
+     var asset: AVAsset
+     let originalDuration: Double
+     var rangeDuration: ClosedRange<Double>
++    var splitPoints = [Double]()
++    var removedRanges = [ClosedRange<Double>]()
+     var thumbnailsImages = [ThumbnailImage]()
+     var rate: Float = 1.0
+     var rotation: Double = 0
+@@ -47,7 +49,19 @@
+     }
+ 
+     var totalDuration: Double {
+-        outputRangeDuration.upperBound - outputRangeDuration.lowerBound
++        let trimmedDuration = outputRangeDuration.upperBound - outputRangeDuration.lowerBound
++        guard rate.isFinite, rate > 0 else { return trimmedDuration }
++
++        let removedDuration = VideoSplitEditor.removedDuration(
++            trim: rangeDuration,
++            removedRanges: removedRanges
++        )
++
++        return max(trimmedDuration - removedDuration / Double(rate), 0)
++    }
++
++    var hasSplitEdits: Bool {
++        !splitPoints.isEmpty || !removedRanges.isEmpty
+     }
+ 
+     @MainActor
+@@ -155,6 +169,48 @@
+ 
+     mutating func resetRangeDuration() {
+         rangeDuration = 0...originalDuration
++        resetSplit()
++    }
++
++    @discardableResult
++    mutating func split(atSourceTime sourceTime: Double) -> Bool {
++        guard
++            let updatedPoints = VideoSplitEditor.splitting(
++                at: sourceTime,
++                trim: rangeDuration,
++                splitPoints: splitPoints,
++                removedRanges: removedRanges
++            )
++        else { return false }
++
++        splitPoints = updatedPoints
++        appliedTool(for: .cut)
++        return true
++    }
++
++    @discardableResult
++    mutating func deleteSegment(atSourceTime sourceTime: Double) -> Bool {
++        guard
++            let updatedRanges = VideoSplitEditor.removingSegment(
++                containing: sourceTime,
++                trim: rangeDuration,
++                splitPoints: splitPoints,
++                removedRanges: removedRanges
++            )
++        else { return false }
++
++        removedRanges = updatedRanges
++        appliedTool(for: .cut)
++        return true
++    }
++
++    mutating func restoreRemovedSegments() {
++        removedRanges = []
++    }
++
++    mutating func resetSplit() {
++        splitPoints = []
++        removedRanges = []
+     }
+ 
+     mutating func resetRate() {
+diff -ruN a/Sources/VideoEditorKit/Internal/ViewModels/EditorViewModel.swift b/Sources/VideoEditorKit/Internal/ViewModels/EditorViewModel.swift
+--- a/Sources/VideoEditorKit/Internal/ViewModels/EditorViewModel.swift	2026-10-28 05:38:37.218497312 +0000
++++ b/Sources/VideoEditorKit/Internal/ViewModels/EditorViewModel.swift	2026-10-28 05:38:37.220002739 +0000
+@@ -394,6 +394,58 @@
+         markEditingConfigurationChanged()
+     }
+ 
++    /// Splits the video at the given playhead position (rate-scaled timeline seconds).
++    @discardableResult
++    func splitAtPlayhead(timelineTime: Double) -> Bool {
++        guard var currentVideo else { return false }
++        cancelPendingToolReset(for: .cut)
++
++        let sourceTime = PlaybackTimeMapping.sourceTime(
++            forTimelineTime: timelineTime,
++            rate: currentVideo.rate,
++            originalDuration: currentVideo.originalDuration
++        )
++
++        guard currentVideo.split(atSourceTime: sourceTime) else { return false }
++
++        self.currentVideo = currentVideo
++        markEditingConfigurationChanged()
++        return true
++    }
++
++    /// Deletes the segment under the playhead. Deleted segments are skipped in preview and export.
++    @discardableResult
++    func deleteSegmentAtPlayhead(timelineTime: Double) -> Bool {
++        guard var currentVideo else { return false }
++        cancelPendingToolReset(for: .cut)
++
++        let sourceTime = PlaybackTimeMapping.sourceTime(
++            forTimelineTime: timelineTime,
++            rate: currentVideo.rate,
++            originalDuration: currentVideo.originalDuration
++        )
++
++        guard currentVideo.deleteSegment(atSourceTime: sourceTime) else { return false }
++
++        self.currentVideo = currentVideo
++        markEditingConfigurationChanged()
++        return true
++    }
++
++    /// Brings back every deleted segment while keeping the split points.
++    func restoreRemovedSegments() {
++        guard var currentVideo, !currentVideo.removedRanges.isEmpty else { return }
++        cancelPendingToolReset(for: .cut)
++
++        currentVideo.restoreRemovedSegments()
++        EditorPlaybackEditingCoordinator.syncCutToolState(
++            in: &currentVideo,
++            tolerance: Constants.numericTolerance
++        )
++        self.currentVideo = currentVideo
++        markEditingConfigurationChanged()
++    }
++
+     func rotate() {
+         cancelPendingToolReset(for: .presets)
+         guard var currentVideo else { return }
+diff -ruN a/Sources/VideoEditorKit/Views/Timeline/VideoEditorTrimSectionView.swift b/Sources/VideoEditorKit/Views/Timeline/VideoEditorTrimSectionView.swift
+--- a/Sources/VideoEditorKit/Views/Timeline/VideoEditorTrimSectionView.swift	2026-10-28 05:38:37.103946105 +0000
++++ b/Sources/VideoEditorKit/Views/Timeline/VideoEditorTrimSectionView.swift	2026-10-28 05:38:37.105024321 +0000
+@@ -26,40 +26,44 @@
+         @Bindable var bindableVideoPlayer = videoPlayer
+ 
+         if let video = editorViewModel.currentVideo {
+-            ThumbnailsSliderView(
+-                $bindableVideoPlayer.currentTime,
+-                video: $bindableEditorViewModel.currentVideo,
+-                isPlaying: videoPlayer.isPlaying,
+-                isChangeState: video.isAppliedTool(for: .cut),
+-                maximumSelectionDuration: editorViewModel.maximumTrimDuration(for: video),
+-                onPlayPauseTapped: handlePlayPauseTap,
+-                onChangeTimeValue: handleTrimRangeChange,
+-                onRequestThumbnails: requestThumbnails,
+-                onTrimRangeInteractionStarted: {
+-                    videoPlayer.beginPlaybackInteraction()
+-                },
+-                onTrimRangeInteractionEnded: { time, range in
+-                    videoPlayer.endPlaybackInteraction(
+-                        resumeAt: time,
+-                        in: range
+-                    )
+-                },
+-                onPlaybackScrubStarted: { range in
+-                    videoPlayer.beginScrubbing(in: range)
+-                },
+-                onPlaybackScrubChanged: { time, range in
+-                    videoPlayer.scrub(
+-                        to: time,
+-                        in: range
+-                    )
+-                },
+-                onPlaybackScrubEnded: { time, range in
+-                    videoPlayer.endScrubbing(
+-                        at: time,
+-                        in: range
+-                    )
+-                }
+-            )
++            VStack(spacing: 8) {
++                splitActionsRow(for: video)
++
++                ThumbnailsSliderView(
++                    $bindableVideoPlayer.currentTime,
++                    video: $bindableEditorViewModel.currentVideo,
++                    isPlaying: videoPlayer.isPlaying,
++                    isChangeState: video.isAppliedTool(for: .cut),
++                    maximumSelectionDuration: editorViewModel.maximumTrimDuration(for: video),
++                    onPlayPauseTapped: handlePlayPauseTap,
++                    onChangeTimeValue: handleTrimRangeChange,
++                    onRequestThumbnails: requestThumbnails,
++                    onTrimRangeInteractionStarted: {
++                        videoPlayer.beginPlaybackInteraction()
++                    },
++                    onTrimRangeInteractionEnded: { time, range in
++                        videoPlayer.endPlaybackInteraction(
++                            resumeAt: time,
++                            in: range
++                        )
++                    },
++                    onPlaybackScrubStarted: { range in
++                        videoPlayer.beginScrubbing(in: range)
++                    },
++                    onPlaybackScrubChanged: { time, range in
++                        videoPlayer.scrub(
++                            to: time,
++                            in: range
++                        )
++                    },
++                    onPlaybackScrubEnded: { time, range in
++                        videoPlayer.endScrubbing(
++                            at: time,
++                            in: range
++                        )
++                    }
++                )
++            }
+         }
+     }
+ 
+@@ -75,6 +79,55 @@
+ 
+     // MARK: - Private Methods
+ 
++    private func splitActionsRow(for video: Video) -> some View {
++        let sourceTime = PlaybackTimeMapping.sourceTime(
++            forTimelineTime: videoPlayer.currentTime,
++            rate: video.rate,
++            originalDuration: video.originalDuration
++        )
++        let canSplit =
++            VideoSplitEditor.splitting(
++                at: sourceTime,
++                trim: video.rangeDuration,
++                splitPoints: video.splitPoints,
++                removedRanges: video.removedRanges
++            ) != nil
++        let canDelete =
++            VideoSplitEditor.removingSegment(
++                containing: sourceTime,
++                trim: video.rangeDuration,
++                splitPoints: video.splitPoints,
++                removedRanges: video.removedRanges
++            ) != nil
++        let canRestore = !video.removedRanges.isEmpty
++
++        return HStack(spacing: 8) {
++            Button(action: handleSplitTap) {
++                Label(VideoEditorStrings.splitAction, systemImage: "scissors")
++            }
++            .disabled(!canSplit)
++
++            Button(action: handleDeleteSegmentTap) {
++                Label(VideoEditorStrings.splitDeleteAction, systemImage: "trash")
++            }
++            .disabled(!canDelete)
++
++            Spacer(minLength: 0)
++
++            if canRestore {
++                Button(action: handleRestoreSegmentsTap) {
++                    Label(
++                        VideoEditorStrings.splitRestoreAction,
++                        systemImage: "arrow.uturn.backward"
++                    )
++                }
++            }
++        }
++        .buttonStyle(.bordered)
++        .controlSize(.small)
++        .padding(.horizontal, 4)
++    }
++
+     private func handlePlayPauseTap() {
+         guard let video = editorViewModel.currentVideo else { return }
+         videoPlayer.action(video)
+@@ -83,6 +136,30 @@
+     private func handleTrimRangeChange(_ newRange: ClosedRange<Double>) {
+         videoPlayer.updatePlaybackRange(newRange)
+         editorViewModel.setCut()
++        syncPlayerRemovedRanges()
++    }
++
++    private func handleSplitTap() {
++        videoPlayer.pause()
++        editorViewModel.splitAtPlayhead(timelineTime: videoPlayer.currentTime)
++        syncPlayerRemovedRanges()
++    }
++
++    private func handleDeleteSegmentTap() {
++        videoPlayer.pause()
++        editorViewModel.deleteSegmentAtPlayhead(timelineTime: videoPlayer.currentTime)
++        syncPlayerRemovedRanges()
++    }
++
++    private func handleRestoreSegmentsTap() {
++        videoPlayer.pause()
++        editorViewModel.restoreRemovedSegments()
++        syncPlayerRemovedRanges()
++    }
++
++    private func syncPlayerRemovedRanges() {
++        guard let video = editorViewModel.currentVideo else { return }
++        videoPlayer.updateRemovedRanges(from: video)
+     }
+ 
+     private func requestThumbnails(_ size: CGSize) {
+diff -ruN a/Sources/VideoEditorKit/Views/Tools/Cut/ThumbnailsSliderView.swift b/Sources/VideoEditorKit/Views/Tools/Cut/ThumbnailsSliderView.swift
+--- a/Sources/VideoEditorKit/Views/Tools/Cut/ThumbnailsSliderView.swift	2026-10-28 05:38:37.122434488 +0000
++++ b/Sources/VideoEditorKit/Views/Tools/Cut/ThumbnailsSliderView.swift	2026-10-28 05:38:37.123609645 +0000
+@@ -246,6 +246,8 @@
+                     onEndChange: commitRangeChange
+                 )
+ 
++                splitOverlay(size: size, video: video)
++
+                 playbackIndicator(
+                     size: size,
+                     video: video
+@@ -309,6 +311,37 @@
+         }
+     }
+ 
++    private func splitOverlay(
++        size: CGSize,
++        video: Video
++    ) -> some View {
++        let duration = max(video.originalDuration, 0.001)
++
++        return ZStack(alignment: .leading) {
++            ForEach(Array(video.removedRanges.enumerated()), id: \.offset) { _, range in
++                Rectangle()
++                    .fill(Color.black.opacity(0.6))
++                    .frame(
++                        width: max(
++                            CGFloat((range.upperBound - range.lowerBound) / duration) * size.width,
++                            0
++                        ),
++                        height: size.height
++                    )
++                    .offset(x: CGFloat(range.lowerBound / duration) * size.width)
++            }
++
++            ForEach(Array(video.splitPoints.enumerated()), id: \.offset) { _, point in
++                Rectangle()
++                    .fill(Color.white)
++                    .frame(width: 2, height: size.height)
++                    .offset(x: CGFloat(point / duration) * size.width - 1)
++            }
++        }
++        .frame(width: size.width, height: size.height, alignment: .leading)
++        .allowsHitTesting(false)
++    }
++
+     private func playbackIndicator(
+         size: CGSize,
+         video: Video
+diff -ruN a/Tests/VideoEditorKitTests/Models/VideoSplitEditorTests.swift b/Tests/VideoEditorKitTests/Models/VideoSplitEditorTests.swift
+--- a/Tests/VideoEditorKitTests/Models/VideoSplitEditorTests.swift	1970-01-01 00:00:00.000000000 +0000
++++ b/Tests/VideoEditorKitTests/Models/VideoSplitEditorTests.swift	2026-10-28 05:38:37.291081208 +0000
+@@ -0,0 +1,99 @@
++import Foundation
++import Testing
++
++@testable import VideoEditorKit
++
++@Suite("VideoSplitEditorTests", .serialized)
++struct VideoSplitEditorTests {
++
++    // MARK: - Public Methods
++
++    @Test
++    func segmentsFollowSplitPointsInsideTheTrimRange() {
++        let segments = VideoSplitEditor.segments(in: 2...20, splitPoints: [5, 12, 30])
++
++        #expect(segments == [2...5, 5...12, 12...20])
++    }
++
++    @Test
++    func splittingRejectsPositionsThatCreateTinySegments() {
++        #expect(
++            VideoSplitEditor.splitting(
++                at: 2.05, trim: 2...20, splitPoints: [], removedRanges: []) == nil)
++        #expect(
++            VideoSplitEditor.splitting(
++                at: 10, trim: 2...20, splitPoints: [], removedRanges: []) == [10])
++    }
++
++    @Test
++    func splittingRejectsPositionsInsideRemovedRanges() {
++        #expect(
++            VideoSplitEditor.splitting(
++                at: 8, trim: 0...20, splitPoints: [5, 12], removedRanges: [5...12]) == nil)
++    }
++
++    @Test
++    func removingSegmentAddsItsRangeAndKeepsAtLeastOneSegment() {
++        let removed = VideoSplitEditor.removingSegment(
++            containing: 8, trim: 0...20, splitPoints: [5, 12], removedRanges: [])
++
++        #expect(removed == [5...12])
++        #expect(
++            VideoSplitEditor.removingSegment(
++                containing: 1, trim: 0...20, splitPoints: [5, 12], removedRanges: [5...12, 12...20])
++                == nil)
++        #expect(
++            VideoSplitEditor.removingSegment(
++                containing: 1, trim: 0...20, splitPoints: [], removedRanges: []) == nil)
++    }
++
++    @Test
++    func effectiveRemovedRangesAreClippedAndMerged() {
++        let ranges = VideoSplitEditor.effectiveRemovedRanges(
++            trim: 4...18, removedRanges: [0...6, 6...8, 15...25])
++
++        #expect(ranges == [4...8, 15...18])
++        #expect(
++            abs(
++                VideoSplitEditor.removedDuration(
++                    trim: 4...18, removedRanges: [0...6, 6...8, 15...25]) - 7) < 0.0001)
++    }
++
++    @Test
++    func skipTargetPointsToTheEndOfTheRemovedRange() {
++        #expect(VideoSplitEditor.skipTarget(for: 6, removedRanges: [5...12]) == 12)
++        #expect(VideoSplitEditor.skipTarget(for: 12, removedRanges: [5...12]) == nil)
++        #expect(VideoSplitEditor.skipTarget(for: 3, removedRanges: [5...12]) == nil)
++    }
++
++    @Test
++    @MainActor
++    func videoTotalDurationExcludesRemovedSegments() {
++        var video = Video.mock
++        video.rangeDuration = 0...100
++        video.split(atSourceTime: 20)
++        video.split(atSourceTime: 60)
++        video.deleteSegment(atSourceTime: 30)
++
++        #expect(abs(video.totalDuration - 60) < 0.0001)
++        #expect(video.isAppliedTool(for: .cut) == true)
++
++        video.resetRangeDuration()
++        #expect(video.hasSplitEdits == false)
++    }
++
++    @Test
++    func configurationRoundTripsSplitState() throws {
++        var configuration = VideoEditingConfiguration()
++        configuration.split = .init(
++            splitPoints: [5, 12],
++            removedRanges: [.init(lowerBound: 5, upperBound: 12)]
++        )
++
++        let data = try JSONEncoder().encode(configuration)
++        let decoded = try JSONDecoder().decode(VideoEditingConfiguration.self, from: data)
++
++        #expect(decoded.split == configuration.split)
++    }
++
++}
