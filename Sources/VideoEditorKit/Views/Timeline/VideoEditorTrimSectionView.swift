@@ -28,8 +28,8 @@ struct VideoEditorTrimSectionView: View {
         if let video = editorViewModel.currentVideo {
             let splitRevision = editorViewModel.splitRevision
 
-            VStack(spacing: 8) {
-                splitActionsRow(for: video)
+            VStack(spacing: 10) {
+                splitActionsRow(for: video, splitRevision: splitRevision)
 
                 ThumbnailsSliderView(
                     $bindableVideoPlayer.currentTime,
@@ -83,7 +83,10 @@ struct VideoEditorTrimSectionView: View {
 
     // MARK: - Private Methods
 
-    private func splitActionsRow(for video: Video) -> some View {
+    private func splitActionsRow(
+        for video: Video,
+        splitRevision: Int
+    ) -> some View {
         let sourceTime = PlaybackTimeMapping.sourceTime(
             forTimelineTime: videoPlayer.currentTime,
             rate: video.rate,
@@ -120,45 +123,19 @@ struct VideoEditorTrimSectionView: View {
         let hasRemovedParts = !video.removedRanges.isEmpty
         let showsRestoreAll = hasRemovedParts && !(canRestorePart && video.removedRanges.count == 1)
 
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Button(action: handleSplitTap) {
-                    Label(VideoEditorStrings.splitAction, systemImage: "scissors")
-                }
-                .disabled(!canSplit)
-
-                if canRestorePart {
-                    Button(action: handleRestorePartTap) {
-                        Label(
-                            VideoEditorStrings.splitRestorePartAction,
-                            systemImage: "arrow.uturn.backward"
-                        )
-                    }
-                } else {
-                    Button(action: handleDeleteSegmentTap) {
-                        Label(VideoEditorStrings.splitDeleteAction, systemImage: "trash")
-                    }
-                    .disabled(!canDelete)
-                }
-
-                Button(action: handleJoinTap) {
-                    Label(VideoEditorStrings.splitJoinAction, systemImage: "link")
-                }
-                .disabled(!canJoin)
-
-                if showsRestoreAll {
-                    Button(action: handleRestoreSegmentsTap) {
-                        Label(
-                            VideoEditorStrings.splitRestoreAllAction,
-                            systemImage: "arrow.counterclockwise"
-                        )
-                    }
-                }
-            }
-            .padding(.horizontal, 4)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        return SplitActionBar(
+            canSplit: canSplit,
+            canDelete: canDelete,
+            canRestorePart: canRestorePart,
+            canJoin: canJoin,
+            showsRestoreAll: showsRestoreAll,
+            hapticTrigger: splitRevision,
+            onSplit: handleSplitTap,
+            onDelete: handleDeleteSegmentTap,
+            onRestorePart: handleRestorePartTap,
+            onJoin: handleJoinTap,
+            onRestoreAll: handleRestoreSegmentsTap
+        )
     }
 
     private func handlePlayPauseTap() {

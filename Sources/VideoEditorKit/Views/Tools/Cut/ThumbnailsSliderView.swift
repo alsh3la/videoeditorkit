@@ -355,6 +355,16 @@ extension ThumbnailsSliderView {
                 trackContent(contentSize)
             }
         }
+        .simultaneousGesture(
+            MagnifyGesture()
+                .onEnded { value in
+                    if value.magnification > 1.2 {
+                        changeZoom(by: 1)
+                    } else if value.magnification < 0.83 {
+                        changeZoom(by: -1)
+                    }
+                }
+        )
         .onAppear {
             setVideoRange()
             viewportWidth = viewportSize.width
@@ -560,17 +570,18 @@ extension ThumbnailsSliderView {
                 let startX = metrics.positionX(forSourceTime: activeSegment.lowerBound)
                 let endX = metrics.positionX(forSourceTime: activeSegment.upperBound)
 
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .strokeBorder(Color.yellow, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(Color.white, lineWidth: 2.5)
+                    .shadow(color: .black.opacity(0.35), radius: 2)
                     .frame(width: max(endX - startX, 0), height: size.height)
                     .offset(x: startX)
             }
 
             ForEach(Array(splitPoints.enumerated()), id: \.offset) { _, point in
                 Rectangle()
-                    .fill(Color.white)
-                    .frame(width: 2, height: size.height)
-                    .offset(x: metrics.positionX(forSourceTime: point) - 1)
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: 1.5, height: size.height)
+                    .offset(x: metrics.positionX(forSourceTime: point) - 0.75)
             }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
@@ -621,8 +632,13 @@ extension ThumbnailsSliderView {
                 ZStack {
                     Capsule()
                         .fill(Color.white)
-                        .overlay(Capsule().strokeBorder(Color.black.opacity(0.35), lineWidth: 1))
-                        .frame(width: 6, height: min(max(size.height * 0.5, 16), 28))
+                        .overlay {
+                            Capsule()
+                                .fill(Color.black.opacity(0.35))
+                                .frame(width: 1.5, height: 12)
+                        }
+                        .shadow(color: .black.opacity(0.35), radius: 2)
+                        .frame(width: 9, height: min(max(size.height * 0.7, 20), 40))
                 }
                 .frame(width: hitWidth, height: size.height)
                 .contentShape(Rectangle())
@@ -736,7 +752,8 @@ extension ThumbnailsSliderView {
         let metrics = timelineMetrics(for: video, width: size.width)
 
         return Capsule(style: .continuous)
-            .fill(.blue)
+            .fill(.white)
+            .shadow(color: .black.opacity(0.4), radius: 2)
             .frame(width: playheadLineWidth, height: size.height + 10)
             .position(
                 x: metrics.playbackPositionX(),
