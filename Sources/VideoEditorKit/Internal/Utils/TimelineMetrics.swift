@@ -99,6 +99,19 @@ struct TimelineMetrics {
         return visibleRangeStartX + (CGFloat(progress) * (visibleRangeEndX - visibleRangeStartX))
     }
 
+    /// Inverse of `positionX(forSourceTime:)`: the source time under an x position on the track.
+    func sourceTime(forX x: CGFloat) -> Double {
+        guard duration > 0, width > 0 else { return playbackRange.lowerBound }
+        guard playbackRangeDuration > 0, visibleRangeEndX > visibleRangeStartX else {
+            return playbackRange.lowerBound
+        }
+
+        let progress = Double((x - visibleRangeStartX) / (visibleRangeEndX - visibleRangeStartX))
+            .clamped(to: 0...1)
+
+        return playbackRange.lowerBound + (progress * playbackRangeDuration)
+    }
+
     func currentClipTime() -> Double {
         max(clampedCurrentTime - playbackRange.lowerBound, 0)
     }
