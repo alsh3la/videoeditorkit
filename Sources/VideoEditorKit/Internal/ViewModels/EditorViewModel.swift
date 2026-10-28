@@ -232,7 +232,8 @@ final class EditorViewModel {
 
     func refreshThumbnailsIfNeeded(
         containerSize: CGSize,
-        displayScale: CGFloat = 1
+        displayScale: CGFloat = 1,
+        thumbnailWidthScale: CGFloat = 1
     ) {
         lastPlayerContainerSize = containerSize
         lastThumbnailDisplayScale = displayScale
@@ -240,12 +241,17 @@ final class EditorViewModel {
         guard let video = currentVideo else { return }
         guard containerSize.width > 0, containerSize.height > 0 else { return }
 
-        let expectedCount = video.thumbnailCount(for: containerSize)
+        // A zoomed timeline is wider than its viewport, so it needs proportionally more thumbnails.
+        let thumbnailContainerSize = CGSize(
+            width: containerSize.width * max(thumbnailWidthScale, 1),
+            height: containerSize.height
+        )
+        let expectedCount = video.thumbnailCount(for: thumbnailContainerSize)
 
         guard expectedCount > 0 else { return }
 
         let expectedThumbnailWidth = max(
-            (containerSize.width / CGFloat(expectedCount)) * max(displayScale, 1),
+            (thumbnailContainerSize.width / CGFloat(expectedCount)) * max(displayScale, 1),
             1
         )
 
@@ -258,7 +264,7 @@ final class EditorViewModel {
 
         loadThumbnails(
             for: video,
-            containerSize: containerSize,
+            containerSize: thumbnailContainerSize,
             displayScale: displayScale
         )
     }
@@ -432,6 +438,54 @@ final class EditorViewModel {
 
         guard currentVideo.deleteSegment(atSourceTime: sourceTime) else { return false }
 
+        self.currentVideo = currentVideo
+        splitRevision += 1
+        markEditingConfigurationChanged()
+        return true
+    }
+
+    /// Brings back only the deleted part under the playhead.
+    @discardableResult
+    func restoreSegmentAtPlayhead(timelineTime: Double) -> Bool {
+        guard var currentVideo else { return false }
+        cancelPendingToolReset(for: .cut)
+
+        let sourceTime = PlaybackTimeMapping.sourceTime(
+            forTimelineTime: timelineTime,
+            rate: currentVideo.rate,
+            originalDuration: currentVideo.originalDuration
+        )
+
+        guard currentVideo.restoreSegment(atSourceTime: sourceTime) else { return false }
+
+        EditorPlaybackEditingCoordinator.syncCutToolState(
+            in: &currentVideo,
+            tolerance: Constants.numericTolerance
+        )
+        self.currentVideo = currentVideo
+        splitRevision += 1
+        markEditingConfigurationChanged()
+        return true
+    }
+
+    /// Joins the part under the playhead with its neighbour by removing the split point between them.
+    @discardableResult
+    func joinSegmentAtPlayhead(timelineTime: Double) -> Bool {
+        guard var currentVideo else { return false }
+        cancelPendingToolReset(for: .cut)
+
+        let sourceTime = PlaybackTimeMapping.sourceTime(
+            forTimelineTime: timelineTime,
+            rate: currentVideo.rate,
+            originalDuration: currentVideo.originalDuration
+        )
+
+        guard currentVideo.joinSegment(atSourceTime: sourceTime) else { return false }
+
+        EditorPlaybackEditingCoordinator.syncCutToolState(
+            in: &currentVideo,
+            tolerance: Constants.numericTolerance
+        )
         self.currentVideo = currentVideo
         splitRevision += 1
         markEditingConfigurationChanged()
