@@ -444,6 +444,24 @@ final class EditorViewModel {
         return true
     }
 
+    /// Moves a split point (source seconds) so the parts on either side get longer or shorter.
+    @discardableResult
+    func moveSplitPoint(from point: Double, to newTime: Double) -> Bool {
+        guard var currentVideo else { return false }
+        cancelPendingToolReset(for: .cut)
+
+        guard currentVideo.moveSplitPoint(from: point, to: newTime) else { return false }
+
+        EditorPlaybackEditingCoordinator.syncCutToolState(
+            in: &currentVideo,
+            tolerance: Constants.numericTolerance
+        )
+        self.currentVideo = currentVideo
+        splitRevision += 1
+        markEditingConfigurationChanged()
+        return true
+    }
+
     /// Brings back only the deleted part under the playhead.
     @discardableResult
     func restoreSegmentAtPlayhead(timelineTime: Double) -> Bool {
