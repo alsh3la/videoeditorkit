@@ -204,6 +204,36 @@ struct Video: Identifiable, @unchecked Sendable {
         return true
     }
 
+    @discardableResult
+    mutating func restoreSegment(atSourceTime sourceTime: Double) -> Bool {
+        guard
+            let updatedRanges = VideoSplitEditor.restoringSegment(
+                containing: sourceTime,
+                trim: rangeDuration,
+                splitPoints: splitPoints,
+                removedRanges: removedRanges
+            )
+        else { return false }
+
+        removedRanges = updatedRanges
+        return true
+    }
+
+    @discardableResult
+    mutating func joinSegment(atSourceTime sourceTime: Double) -> Bool {
+        guard
+            let updatedPoints = VideoSplitEditor.joiningSegment(
+                containing: sourceTime,
+                trim: rangeDuration,
+                splitPoints: splitPoints,
+                removedRanges: removedRanges
+            )
+        else { return false }
+
+        splitPoints = updatedPoints
+        return true
+    }
+
     mutating func restoreRemovedSegments() {
         removedRanges = []
     }
