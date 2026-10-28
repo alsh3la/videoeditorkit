@@ -21,6 +21,7 @@ struct ThumbnailsSliderView: View {
     @State private var playbackScrubStartSourceTime: Double?
     @State private var isSynchronizingAnchoredPlayback = false
     @State private var isEditingTrimRange = false
+    @State private var splitDrag: SplitDrag?
     @State private var zoomLevel: CGFloat = 1
     @State private var viewportWidth: CGFloat = 0
     @State private var scrollOffsetX: CGFloat = 0
@@ -40,6 +41,7 @@ struct ThumbnailsSliderView: View {
     private let onPlaybackScrubStarted: (ClosedRange<Double>) -> Void
     private let onPlaybackScrubChanged: (Double, ClosedRange<Double>) -> Void
     private let onPlaybackScrubEnded: (Double, ClosedRange<Double>) -> Void
+    private let onMoveSplitPoint: (Double, Double) -> Void
 
     // MARK: - Body
 
@@ -116,7 +118,8 @@ struct ThumbnailsSliderView: View {
         onTrimRangeInteractionEnded: @escaping (Double, ClosedRange<Double>) -> Void,
         onPlaybackScrubStarted: @escaping (ClosedRange<Double>) -> Void,
         onPlaybackScrubChanged: @escaping (Double, ClosedRange<Double>) -> Void,
-        onPlaybackScrubEnded: @escaping (Double, ClosedRange<Double>) -> Void
+        onPlaybackScrubEnded: @escaping (Double, ClosedRange<Double>) -> Void,
+        onMoveSplitPoint: @escaping (Double, Double) -> Void = { _, _ in }
     ) {
         _currentTime = currentTime
         _video = video
@@ -138,6 +141,7 @@ struct ThumbnailsSliderView: View {
         self.onPlaybackScrubStarted = onPlaybackScrubStarted
         self.onPlaybackScrubChanged = onPlaybackScrubChanged
         self.onPlaybackScrubEnded = onPlaybackScrubEnded
+        self.onMoveSplitPoint = onMoveSplitPoint
     }
 
 }
@@ -382,6 +386,8 @@ extension ThumbnailsSliderView {
 
                 splitOverlay(size: size, video: video)
 
+                splitHandles(size: size, video: video)
+
                 playbackIndicator(
                     size: size,
                     video: video
@@ -389,6 +395,7 @@ extension ThumbnailsSliderView {
                 .zIndex(999)
             }
         }
+        .coordinateSpace(name: Self.trackCoordinateSpace)
     }
 
     private static func resolvedVideoRange(
@@ -512,11 +519,12 @@ extension ThumbnailsSliderView {
         video: Video
     ) -> some View {
         let metrics = timelineMetrics(for: video, width: size.width)
+        let displayedState = displayedSplitState(for: video)
         let removedRanges = VideoSplitEditor.effectiveRemovedRanges(
             trim: rangeDuration,
-            removedRanges: video.removedRanges
+            removedRanges: displayedState.removedRanges
         )
-        let splitPoints = video.splitPoints.filter {
+        let splitPoints = displayedState.splitPoints.filter {
             $0 > rangeDuration.lowerBound && $0 < rangeDuration.upperBound
         }
 
@@ -526,7 +534,7 @@ extension ThumbnailsSliderView {
             : VideoSplitEditor.segment(
                 containing: sourceTime(for: video, timelineTime: currentTime),
                 in: rangeDuration,
-                splitPoints: video.splitPoints
+                splitPoints: displayedState.splitPoints
             )
 
         return ZStack(alignment: .topLeading) {
@@ -568,6 +576,157 @@ extension ThumbnailsSliderView {
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .id(splitRevision)
         .allowsHitTesting(false)
+    }
+
+    // MARK: - Split Boundary Dragging
+
+    private struct SplitDrag: Equatable {
+        let originalPoint: Double
+        var targetSourceTime: Double
+    }
+
+    private static let trackCoordinateSpace = "VideoEditorKit.splitTrackContent"
+
+    /// Split points and removed ranges as they should be drawn, including a drag in progress.
+    private func displayedSplitState(
+        for video: Video
+    ) -> (splitPoints: [Double], removedRanges: [ClosedRange<Double>]) {
+        guard
+            let splitDrag,
+            let move = VideoSplitEditor.movingSplitPoint(
+                splitDrag.originalPoint,
+                to: splitDrag.targetSourceTime,
+                trim: video.rangeDuration,
+                splitPoints: video.splitPoints,
+                removedRanges: video.removedRanges
+            )
+        else { return (video.splitPoints, video.removedRanges) }
+
+        return (move.splitPoints, move.removedRanges)
+    }
+
+    /// Grab handles on every split point. Dragging one moves the boundary between two parts.
+    private func splitHandles(
+        size: CGSize,
+        video: Video
+    ) -> some View {
+        let metrics = timelineMetrics(for: video, width: size.width)
+        let points = displayedSplitState(for: video).splitPoints.filter {
+            $0 > rangeDuration.lowerBound && $0 < rangeDuration.upperBound
+        }
+        let hitWidth: CGFloat = 28
+
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                ZStack {
+                    Capsule()
+                        .fill(Color.white)
+                        .overlay(Capsule().strokeBorder(Color.black.opacity(0.35), lineWidth: 1))
+                        .frame(width: 6, height: min(max(size.height * 0.5, 16), 28))
+                }
+                .frame(width: hitWidth, height: size.height)
+                .contentShape(Rectangle())
+                .offset(x: metrics.positionX(forSourceTime: point) - (hitWidth / 2))
+                .gesture(
+                    splitHandleGesture(
+                        originalPoint: point,
+                        video: video,
+                        width: size.width
+                    )
+                )
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+    }
+
+    private func splitHandleGesture(
+        originalPoint: Double,
+        video: Video,
+        width: CGFloat
+    ) -> some Gesture {
+        DragGesture(
+            minimumDistance: 2,
+            coordinateSpace: .named(Self.trackCoordinateSpace)
+        )
+        .onChanged { value in
+            let outputRange = video.outputRangeDuration
+            let anchorPoint = splitDrag?.originalPoint ?? originalPoint
+            let target = splitTarget(
+                for: value,
+                anchorPoint: anchorPoint,
+                video: video,
+                width: width
+            )
+
+            if splitDrag == nil {
+                onPlaybackScrubStarted(outputRange)
+            }
+
+            splitDrag = SplitDrag(originalPoint: anchorPoint, targetSourceTime: target)
+
+            guard
+                let move = VideoSplitEditor.movingSplitPoint(
+                    anchorPoint,
+                    to: target,
+                    trim: video.rangeDuration,
+                    splitPoints: video.splitPoints,
+                    removedRanges: video.removedRanges
+                )
+            else { return }
+
+            // Show the frame at the boundary while it moves.
+            let previewTime = PlaybackTimeMapping.timelineTime(
+                fromSourceTime: move.point,
+                rate: video.rate
+            )
+            currentTime = previewTime
+            onPlaybackScrubChanged(previewTime, outputRange)
+        }
+        .onEnded { value in
+            let outputRange = video.outputRangeDuration
+            let anchorPoint = splitDrag?.originalPoint ?? originalPoint
+            let target = splitTarget(
+                for: value,
+                anchorPoint: anchorPoint,
+                video: video,
+                width: width
+            )
+            let move = VideoSplitEditor.movingSplitPoint(
+                anchorPoint,
+                to: target,
+                trim: video.rangeDuration,
+                splitPoints: video.splitPoints,
+                removedRanges: video.removedRanges
+            )
+
+            if let move {
+                onMoveSplitPoint(anchorPoint, move.point)
+            }
+
+            let endTime = PlaybackTimeMapping.timelineTime(
+                fromSourceTime: move?.point ?? anchorPoint,
+                rate: video.rate
+            )
+
+            splitDrag = nil
+            currentTime = endTime
+            onPlaybackScrubEnded(endTime, outputRange)
+        }
+    }
+
+    private func splitTarget(
+        for value: DragGesture.Value,
+        anchorPoint: Double,
+        video: Video,
+        width: CGFloat
+    ) -> Double {
+        let metrics = timelineMetrics(for: video, width: width)
+        let startX = metrics.positionX(forSourceTime: anchorPoint)
+
+        // Keep the grab offset so the boundary does not jump under the finger.
+        return metrics.sourceTime(
+            forX: startX + (value.location.x - value.startLocation.x)
+        )
     }
 
     private func playbackIndicator(
