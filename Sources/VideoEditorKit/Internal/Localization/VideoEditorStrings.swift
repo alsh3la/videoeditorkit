@@ -202,6 +202,21 @@ enum VideoEditorStrings {
     static var splitRestoreAction: String {
         localized("editor.split.restore.title", defaultValue: "Restore")
     }
+    static var splitRestorePartAction: String {
+        localized("editor.split.restore-part.title", defaultValue: "Restore Part")
+    }
+    static var splitRestoreAllAction: String {
+        localized("editor.split.restore-all.title", defaultValue: "Restore All")
+    }
+    static var splitJoinAction: String {
+        localized("editor.split.join.title", defaultValue: "Join")
+    }
+    static var timelineZoomIn: String {
+        localized("editor.timeline.zoom-in", defaultValue: "Zoom in timeline")
+    }
+    static var timelineZoomOut: String {
+        localized("editor.timeline.zoom-out", defaultValue: "Zoom out timeline")
+    }
     static var toolSpeed: String { localized("editor.tool.speed.title", defaultValue: "Speed") }
     static var toolPresets: String { localized("editor.tool.presets.title", defaultValue: "Presets") }
     static var toolAudio: String { localized("editor.tool.audio.title", defaultValue: "Audio") }
