@@ -104,6 +104,84 @@ enum VideoSplitEditor {
         return normalized(removedRanges + [segment])
     }
 
+    /// Returns the removed ranges after bringing back only the deleted part under `sourceTime`.
+    /// Returns `nil` when that part is not deleted.
+    static func restoringSegment(
+        containing sourceTime: Double,
+        trim: ClosedRange<Double>,
+        splitPoints: [Double],
+        removedRanges: [ClosedRange<Double>]
+    ) -> [ClosedRange<Double>]? {
+        guard
+            let segment = segment(
+                containing: sourceTime,
+                in: trim,
+                splitPoints: splitPoints
+            )
+        else { return nil }
+
+        let midpoint = (segment.lowerBound + segment.upperBound) / 2
+        guard isRemoved(midpoint, in: removedRanges) else { return nil }
+
+        var remaining = [ClosedRange<Double>]()
+
+        for range in removedRanges {
+            let overlapsSegment =
+                range.upperBound > segment.lowerBound + tolerance
+                && range.lowerBound < segment.upperBound - tolerance
+
+            guard overlapsSegment else {
+                remaining.append(range)
+                continue
+            }
+
+            if segment.lowerBound - range.lowerBound > tolerance {
+                remaining.append(range.lowerBound...segment.lowerBound)
+            }
+
+            if range.upperBound - segment.upperBound > tolerance {
+                remaining.append(segment.upperBound...range.upperBound)
+            }
+        }
+
+        return normalized(remaining)
+    }
+
+    /// Returns split points after joining the part under `sourceTime` with its next part
+    /// (or its previous part when it is the last one). Both parts must be kept or both deleted.
+    static func joiningSegment(
+        containing sourceTime: Double,
+        trim: ClosedRange<Double>,
+        splitPoints: [Double],
+        removedRanges: [ClosedRange<Double>]
+    ) -> [Double]? {
+        let allSegments = segments(in: trim, splitPoints: splitPoints)
+
+        guard
+            allSegments.count > 1,
+            let current = segment(containing: sourceTime, in: trim, splitPoints: splitPoints),
+            let index = allSegments.firstIndex(of: current)
+        else { return nil }
+
+        let pair =
+            index + 1 < allSegments.count
+            ? (allSegments[index], allSegments[index + 1])
+            : (allSegments[index - 1], allSegments[index])
+
+        let isFirstRemoved = isRemoved((pair.0.lowerBound + pair.0.upperBound) / 2, in: removedRanges)
+        let isSecondRemoved = isRemoved((pair.1.lowerBound + pair.1.upperBound) / 2, in: removedRanges)
+        guard isFirstRemoved == isSecondRemoved else { return nil }
+
+        let boundary = pair.0.upperBound
+        guard
+            let pointIndex = splitPoints.firstIndex(where: { abs($0 - boundary) <= tolerance })
+        else { return nil }
+
+        var updatedPoints = splitPoints
+        updatedPoints.remove(at: pointIndex)
+        return updatedPoints
+    }
+
     static func isRemoved(
         _ sourceTime: Double,
         in removedRanges: [ClosedRange<Double>]
