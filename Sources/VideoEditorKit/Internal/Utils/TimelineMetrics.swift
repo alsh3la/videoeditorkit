@@ -87,6 +87,18 @@ struct TimelineMetrics {
         return min(max(positionX, visibleRangeStartX), visibleRangeEndX)
     }
 
+    /// X position of a source-time marker, in the same space as `playbackPositionX()`.
+    func positionX(forSourceTime sourceTime: Double) -> CGFloat {
+        guard duration > 0, width > 0 else { return minimumX }
+        guard playbackRangeDuration > 0, visibleRangeEndX > visibleRangeStartX else {
+            return rangeStartX
+        }
+
+        let progress = (sourceTime.clamped(to: playbackRange) - playbackRange.lowerBound) / playbackRangeDuration
+
+        return visibleRangeStartX + (CGFloat(progress) * (visibleRangeEndX - visibleRangeStartX))
+    }
+
     func currentClipTime() -> Double {
         max(clampedCurrentTime - playbackRange.lowerBound, 0)
     }
