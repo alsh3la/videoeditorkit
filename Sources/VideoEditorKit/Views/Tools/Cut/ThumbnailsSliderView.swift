@@ -293,6 +293,53 @@ extension ThumbnailsSliderView {
                 style: .continuous
             )
         )
+        .contentShape(Rectangle())
+        .gesture(trackScrubGesture(width: size.width))
+    }
+
+    /// Lets the playhead be dragged (or tapped into place) anywhere on the track, paused or playing.
+    /// The trim handles sit above the track, so they keep priority at the edges.
+    private func trackScrubGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { gesture in
+                guard let video else { return }
+
+                let outputRange = video.outputRangeDuration
+
+                if !isScrubbingPlaybackIndicator {
+                    isScrubbingPlaybackIndicator = true
+                    onPlaybackScrubStarted(outputRange)
+                }
+
+                let scrubTime = scrubTime(forX: gesture.location.x, video: video, width: width)
+                currentTime = scrubTime
+                onPlaybackScrubChanged(scrubTime, outputRange)
+            }
+            .onEnded { gesture in
+                guard let video else {
+                    isScrubbingPlaybackIndicator = false
+                    return
+                }
+
+                let outputRange = video.outputRangeDuration
+                let scrubTime = scrubTime(forX: gesture.location.x, video: video, width: width)
+                currentTime = scrubTime
+                isScrubbingPlaybackIndicator = false
+                onPlaybackScrubEnded(scrubTime, outputRange)
+            }
+    }
+
+    private func scrubTime(
+        forX x: CGFloat,
+        video: Video,
+        width: CGFloat
+    ) -> Double {
+        let metrics = timelineMetrics(for: video, width: width)
+
+        return PlaybackTimeMapping.timelineTime(
+            fromSourceTime: metrics.sourceTime(forX: x),
+            rate: video.rate
+        )
     }
 
     @ViewBuilder
@@ -458,8 +505,9 @@ extension ThumbnailsSliderView {
             return video.outputRangeDuration.lowerBound
         }
 
-        let deltaSourceTime = Double(translationWidth / width) * video.originalDuration
-        let sourceTime = (startSourceTime + deltaSourceTime).clamped(to: rangeDuration)
+        let metrics = timelineMetrics(for: video, width: width)
+        let startX = metrics.positionX(forSourceTime: startSourceTime)
+        let sourceTime = metrics.sourceTime(forX: startX + translationWidth)
 
         return PlaybackTimeMapping.timelineTime(fromSourceTime: sourceTime, rate: video.rate)
     }
