@@ -41,6 +41,7 @@ struct VideoEditorTrimSectionView: View {
                     onPlayPauseTapped: handlePlayPauseTap,
                     onChangeTimeValue: handleTrimRangeChange,
                     onRequestThumbnails: requestThumbnails,
+                    onMoveSplitPoint: handleMoveSplitPoint,
                     onTrimRangeInteractionStarted: {
                         videoPlayer.beginPlaybackInteraction()
                     },
@@ -226,6 +227,11 @@ struct VideoEditorTrimSectionView: View {
         videoPlayer.beginScrubbing(in: range)
         videoPlayer.scrub(to: targetTime, in: range)
         videoPlayer.endScrubbing(at: targetTime, in: range)
+    }
+
+    private func handleMoveSplitPoint(from point: Double, to newTime: Double) {
+        editorViewModel.moveSplitPoint(from: point, to: newTime)
+        syncPlayerRemovedRanges()
     }
 
     private func handleRestorePartTap() {
