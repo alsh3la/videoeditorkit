@@ -26,6 +26,8 @@ struct VideoEditorTrimSectionView: View {
         @Bindable var bindableVideoPlayer = videoPlayer
 
         if let video = editorViewModel.currentVideo {
+            let splitRevision = editorViewModel.splitRevision
+
             VStack(spacing: 8) {
                 splitActionsRow(for: video)
 
@@ -33,6 +35,7 @@ struct VideoEditorTrimSectionView: View {
                     $bindableVideoPlayer.currentTime,
                     video: $bindableEditorViewModel.currentVideo,
                     isPlaying: videoPlayer.isPlaying,
+                    splitRevision: splitRevision,
                     isChangeState: video.isAppliedTool(for: .cut),
                     maximumSelectionDuration: editorViewModel.maximumTrimDuration(for: video),
                     onPlayPauseTapped: handlePlayPauseTap,
@@ -140,15 +143,60 @@ struct VideoEditorTrimSectionView: View {
     }
 
     private func handleSplitTap() {
+        // Read the playhead before pausing: pausing re-syncs `currentTime` from the player,
+        // which can still report the position from before a scrub finished seeking.
+        let playheadTime = videoPlayer.currentTime
+
         videoPlayer.pause()
-        editorViewModel.splitAtPlayhead(timelineTime: videoPlayer.currentTime)
+        editorViewModel.splitAtPlayhead(timelineTime: playheadTime)
         syncPlayerRemovedRanges()
     }
 
     private func handleDeleteSegmentTap() {
+        let playheadTime = videoPlayer.currentTime
+
         videoPlayer.pause()
-        editorViewModel.deleteSegmentAtPlayhead(timelineTime: videoPlayer.currentTime)
+
+        guard
+            editorViewModel.deleteSegmentAtPlayhead(timelineTime: playheadTime),
+            let video = editorViewModel.currentVideo
+        else { return }
+
         syncPlayerRemovedRanges()
+        movePlayheadOutOfRemovedRange(in: video, fromTimelineTime: playheadTime)
+    }
+
+    /// After deleting, parks the playhead on the nearest kept frame instead of inside the gap.
+    private func movePlayheadOutOfRemovedRange(
+        in video: Video,
+        fromTimelineTime timelineTime: Double
+    ) {
+        let sourceTime = PlaybackTimeMapping.sourceTime(
+            forTimelineTime: timelineTime,
+            rate: video.rate,
+            originalDuration: video.originalDuration
+        )
+        let removedRanges = VideoSplitEditor.effectiveRemovedRanges(
+            trim: video.rangeDuration,
+            removedRanges: video.removedRanges
+        )
+        guard
+            let gap = removedRanges.first(where: { $0.contains(sourceTime) })
+        else { return }
+
+        let targetSourceTime =
+            gap.upperBound < video.rangeDuration.upperBound - 0.001
+            ? gap.upperBound
+            : max(gap.lowerBound - 0.05, video.rangeDuration.lowerBound)
+        let targetTime = PlaybackTimeMapping.timelineTime(
+            fromSourceTime: targetSourceTime,
+            rate: video.rate
+        )
+        let range = video.outputRangeDuration
+
+        videoPlayer.beginScrubbing(in: range)
+        videoPlayer.scrub(to: targetTime, in: range)
+        videoPlayer.endScrubbing(at: targetTime, in: range)
     }
 
     private func handleRestoreSegmentsTap() {
