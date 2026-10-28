@@ -21,6 +21,10 @@ struct ThumbnailsSliderView: View {
     @State private var playbackScrubStartSourceTime: Double?
     @State private var isSynchronizingAnchoredPlayback = false
     @State private var isEditingTrimRange = false
+    @State private var zoomLevel: CGFloat = 1
+    @State private var viewportWidth: CGFloat = 0
+    @State private var scrollOffsetX: CGFloat = 0
+    @State private var scrollPosition = ScrollPosition(edge: .leading)
 
     // MARK: - Private Properties
 
@@ -30,7 +34,7 @@ struct ThumbnailsSliderView: View {
     private let maximumSelectionDuration: Double?
     private let onPlayPauseTapped: () -> Void
     private let onChangeTimeValue: (ClosedRange<Double>) -> Void
-    private let onRequestThumbnails: (CGSize) -> Void
+    private let onRequestThumbnails: (CGSize, CGFloat) -> Void
     private let onTrimRangeInteractionStarted: () -> Void
     private let onTrimRangeInteractionEnded: (Double, ClosedRange<Double>) -> Void
     private let onPlaybackScrubStarted: (ClosedRange<Double>) -> Void
@@ -78,7 +82,15 @@ struct ThumbnailsSliderView: View {
         .onChange(of: rangeDuration) { oldRange, newRange in
             syncAnchoredPlaybackIfNeeded(from: oldRange, to: newRange)
         }
+        .onChange(of: currentTime) { _, _ in
+            guard let video else { return }
+            keepPlayheadVisible(in: video)
+        }
     }
+
+    // MARK: - Zoom
+
+    private let zoomLevels: [CGFloat] = [1, 2, 4, 8]
 
     // MARK: - Private Properties
 
@@ -99,7 +111,7 @@ struct ThumbnailsSliderView: View {
         maximumSelectionDuration: Double? = nil,
         onPlayPauseTapped: @escaping () -> Void,
         onChangeTimeValue: @escaping (ClosedRange<Double>) -> Void,
-        onRequestThumbnails: @escaping (CGSize) -> Void,
+        onRequestThumbnails: @escaping (CGSize, CGFloat) -> Void,
         onTrimRangeInteractionStarted: @escaping () -> Void,
         onTrimRangeInteractionEnded: @escaping (Double, ClosedRange<Double>) -> Void,
         onPlaybackScrubStarted: @escaping (ClosedRange<Double>) -> Void,
@@ -139,6 +151,8 @@ extension ThumbnailsSliderView {
 
                 footerTime(playbackRange.lowerBound)
                 Spacer()
+                zoomControls
+                Spacer()
                 footerTime(playbackRange.upperBound)
             }
         }
@@ -151,6 +165,87 @@ extension ThumbnailsSliderView {
     }
 
     // MARK: - Private Methods
+
+    private var zoomControls: some View {
+        HStack(spacing: 10) {
+            Button {
+                changeZoom(by: -1)
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .disabled(zoomLevel <= zoomLevels[0])
+            .accessibilityLabel(VideoEditorStrings.timelineZoomOut)
+
+            Text("\(Int(zoomLevel))x")
+                .font(.caption2.monospacedDigit().weight(.medium))
+                .frame(minWidth: 24)
+
+            Button {
+                changeZoom(by: 1)
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .disabled(zoomLevel >= (zoomLevels.last ?? 1))
+            .accessibilityLabel(VideoEditorStrings.timelineZoomIn)
+        }
+        .font(.footnote)
+        .foregroundStyle(Theme.primary)
+    }
+
+    private func changeZoom(by step: Int) {
+        guard let index = zoomLevels.firstIndex(of: zoomLevel) else { return }
+
+        let newIndex = min(max(index + step, 0), zoomLevels.count - 1)
+        guard newIndex != index else { return }
+
+        zoomLevel = zoomLevels[newIndex]
+
+        guard zoomLevel > 1 else {
+            scrollOffsetX = 0
+            return
+        }
+
+        guard let video else { return }
+
+        let metrics = timelineMetrics(for: video, width: viewportWidth * zoomLevel)
+        let target = metrics.playbackPositionX() - (viewportWidth / 2)
+
+        scrollToContentX(target, animated: false)
+        Task { @MainActor in
+            scrollToContentX(target, animated: false)
+        }
+    }
+
+    private func keepPlayheadVisible(in video: Video) {
+        guard zoomLevel > 1, viewportWidth > 0 else { return }
+
+        let metrics = timelineMetrics(for: video, width: viewportWidth * zoomLevel)
+        let playheadX = metrics.playbackPositionX()
+        let margin: CGFloat = 24
+
+        guard
+            playheadX < scrollOffsetX + margin
+                || playheadX > scrollOffsetX + viewportWidth - margin
+        else { return }
+
+        scrollToContentX(
+            playheadX - (viewportWidth / 2),
+            animated: !isScrubbingPlaybackIndicator
+        )
+    }
+
+    private func scrollToContentX(_ x: CGFloat, animated: Bool) {
+        let maximumOffset = max((viewportWidth * zoomLevel) - viewportWidth, 0)
+        let target = min(max(x, 0), maximumOffset)
+
+        if animated {
+            withAnimation(.smooth(duration: 0.25)) {
+                scrollPosition.scrollTo(x: target)
+            }
+        } else {
+            scrollPosition.scrollTo(x: target)
+        }
+    }
 
     private func footerTime(_ value: Double) -> some View {
         Text(value.formatterPreciseTimeString())
@@ -232,7 +327,43 @@ extension ThumbnailsSliderView {
         onTrimRangeInteractionEnded(currentTime, updatedOutputRange)
     }
 
-    private func timelineTrack(_ size: CGSize) -> some View {
+    private func timelineTrack(_ viewportSize: CGSize) -> some View {
+        let contentSize = CGSize(
+            width: viewportSize.width * zoomLevel,
+            height: viewportSize.height
+        )
+
+        return Group {
+            if zoomLevel > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    trackContent(contentSize)
+                        .frame(width: contentSize.width, height: contentSize.height)
+                }
+                .scrollPosition($scrollPosition)
+                .scrollClipDisabled()
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.x
+                } action: { _, newOffset in
+                    scrollOffsetX = newOffset
+                }
+                .frame(width: viewportSize.width, height: viewportSize.height)
+            } else {
+                trackContent(contentSize)
+            }
+        }
+        .onAppear {
+            setVideoRange()
+            viewportWidth = viewportSize.width
+        }
+        .onChange(of: viewportSize.width) { _, newWidth in
+            viewportWidth = newWidth
+        }
+        .task(id: thumbnailRequestID(for: viewportSize)) {
+            onRequestThumbnails(viewportSize, zoomLevel)
+        }
+    }
+
+    private func trackContent(_ size: CGSize) -> some View {
         ZStack {
             timelineSurface(size)
 
@@ -257,12 +388,6 @@ extension ThumbnailsSliderView {
                 )
                 .zIndex(999)
             }
-        }
-        .onAppear {
-            setVideoRange()
-        }
-        .task(id: thumbnailRequestID(for: size)) {
-            onRequestThumbnails(size)
         }
     }
 
@@ -294,7 +419,28 @@ extension ThumbnailsSliderView {
             )
         )
         .contentShape(Rectangle())
-        .gesture(trackScrubGesture(width: size.width))
+        .gesture(
+            trackScrubGesture(width: size.width),
+            including: zoomLevel > 1 ? .subviews : .all
+        )
+        .onTapGesture { location in
+            guard zoomLevel > 1, let video else { return }
+            seekPlayhead(toX: location.x, video: video, width: size.width)
+        }
+    }
+
+    private func seekPlayhead(
+        toX x: CGFloat,
+        video: Video,
+        width: CGFloat
+    ) {
+        let outputRange = video.outputRangeDuration
+        let scrubTime = playheadTime(forX: x, video: video, width: width)
+
+        onPlaybackScrubStarted(outputRange)
+        currentTime = scrubTime
+        onPlaybackScrubChanged(scrubTime, outputRange)
+        onPlaybackScrubEnded(scrubTime, outputRange)
     }
 
     /// Lets the playhead be dragged (or tapped into place) anywhere on the track, paused or playing.
@@ -311,7 +457,7 @@ extension ThumbnailsSliderView {
                     onPlaybackScrubStarted(outputRange)
                 }
 
-                let scrubTime = scrubTime(forX: gesture.location.x, video: video, width: width)
+                let scrubTime = playheadTime(forX: gesture.location.x, video: video, width: width)
                 currentTime = scrubTime
                 onPlaybackScrubChanged(scrubTime, outputRange)
             }
@@ -322,14 +468,14 @@ extension ThumbnailsSliderView {
                 }
 
                 let outputRange = video.outputRangeDuration
-                let scrubTime = scrubTime(forX: gesture.location.x, video: video, width: width)
+                let scrubTime = playheadTime(forX: gesture.location.x, video: video, width: width)
                 currentTime = scrubTime
                 isScrubbingPlaybackIndicator = false
                 onPlaybackScrubEnded(scrubTime, outputRange)
             }
     }
 
-    private func scrubTime(
+    private func playheadTime(
         forX x: CGFloat,
         video: Video,
         width: CGFloat
@@ -374,6 +520,15 @@ extension ThumbnailsSliderView {
             $0 > rangeDuration.lowerBound && $0 < rangeDuration.upperBound
         }
 
+        let activeSegment =
+            splitPoints.isEmpty
+            ? nil
+            : VideoSplitEditor.segment(
+                containing: sourceTime(for: video, timelineTime: currentTime),
+                in: rangeDuration,
+                splitPoints: video.splitPoints
+            )
+
         return ZStack(alignment: .topLeading) {
             ForEach(Array(removedRanges.enumerated()), id: \.offset) { _, range in
                 let startX = metrics.positionX(forSourceTime: range.lowerBound)
@@ -390,6 +545,16 @@ extension ThumbnailsSliderView {
                         }
                     }
                     .frame(width: width, height: size.height)
+                    .offset(x: startX)
+            }
+
+            if let activeSegment {
+                let startX = metrics.positionX(forSourceTime: activeSegment.lowerBound)
+                let endX = metrics.positionX(forSourceTime: activeSegment.upperBound)
+
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(Color.yellow, lineWidth: 2)
+                    .frame(width: max(endX - startX, 0), height: size.height)
                     .offset(x: startX)
             }
 
@@ -426,8 +591,15 @@ extension ThumbnailsSliderView {
         badgeWidth: CGFloat,
         video: Video
     ) -> some View {
-        let metrics = timelineMetrics(for: video, width: size.width)
-        let clampedX = metrics.badgePositionX(for: badgeWidth)
+        let metrics = timelineMetrics(for: video, width: size.width * zoomLevel)
+        let clampedX: CGFloat = {
+            guard zoomLevel > 1 else { return metrics.badgePositionX(for: badgeWidth) }
+
+            let halfWidth = max(badgeWidth / 2, 24)
+            let visibleX = metrics.playbackPositionX() - scrollOffsetX
+
+            return min(max(visibleX, halfWidth), max(size.width - halfWidth, halfWidth))
+        }()
         let playbackRange = video.outputRangeDuration
         let removedBeforePlayhead =
             VideoSplitEditor.removedDuration(
@@ -455,7 +627,7 @@ extension ThumbnailsSliderView {
         .gesture(
             playbackIndicatorGesture(
                 video: video,
-                width: size.width
+                width: size.width * zoomLevel
             )
         )
     }
@@ -516,7 +688,7 @@ extension ThumbnailsSliderView {
         let width = Int(size.width.rounded())
         let height = Int(size.height.rounded())
         let videoID = video?.id.uuidString ?? "none"
-        return "\(videoID)-\(width)-\(height)"
+        return "\(videoID)-\(width)-\(height)-\(Int(zoomLevel))"
     }
 
     @ViewBuilder
@@ -591,7 +763,7 @@ extension ThumbnailsSliderView {
         isChangeState: nil,
         onPlayPauseTapped: {},
         onChangeTimeValue: { _ in },
-        onRequestThumbnails: { _ in },
+        onRequestThumbnails: { _, _ in },
         onTrimRangeInteractionStarted: {},
         onTrimRangeInteractionEnded: { _, _ in },
         onPlaybackScrubStarted: { _ in },
