@@ -3,7 +3,7 @@
 //  VideoEditorKit
 //
 //  Created by Adriano Souza Costa on 23.03.2026.
-//
+// Update 28 Oct
 
 import AVFoundation
 import CoreImage
@@ -172,13 +172,14 @@ enum VideoEditor {
             from: composition
         )
         let trimmedOutputRange = video.outputRangeDuration
+        let exportStart = trimmedOutputRange.lowerBound
+        let exportEnd = max(
+            exportStart,
+            trimmedOutputRange.upperBound - removedTimelineDuration
+        )
         let timeRange = getTimeRange(
             for: video.timelineDuration,
-            with: trimmedOutputRange.lowerBound
-                ...max(
-                    trimmedOutputRange.lowerBound,
-                    trimmedOutputRange.upperBound - removedTimelineDuration
-                )
+            with: exportStart...exportEnd
         )
 
         guard let videoTrack = try await composition.loadTracks(withMediaType: .video).first else {
