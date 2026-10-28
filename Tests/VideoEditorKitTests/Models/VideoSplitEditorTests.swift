@@ -94,6 +94,39 @@ struct VideoSplitEditorTests {
     }
 
     @Test
+    func movingSplitPointResizesNeighbouringPartsAndDeletedEdges() {
+        let move = VideoSplitEditor.movingSplitPoint(
+            12, to: 15, trim: 0...20, splitPoints: [5, 12], removedRanges: [12...20])
+
+        #expect(move?.splitPoints == [5, 15])
+        #expect(move?.removedRanges == [15...20])
+        #expect(move?.point == 15)
+    }
+
+    @Test
+    func movingSplitPointStaysInsideNeighbouringBoundaries() {
+        let low = VideoSplitEditor.movingSplitPoint(
+            12, to: 1, trim: 0...20, splitPoints: [5, 12], removedRanges: [])
+        let high = VideoSplitEditor.movingSplitPoint(
+            12, to: 99, trim: 0...20, splitPoints: [5, 12], removedRanges: [])
+
+        #expect(abs((low?.point ?? 0) - 5.2) < 0.0001)
+        #expect(abs((high?.point ?? 0) - 19.8) < 0.0001)
+        #expect(
+            VideoSplitEditor.movingSplitPoint(
+                9, to: 10, trim: 0...20, splitPoints: [5, 12], removedRanges: []) == nil)
+    }
+
+    @Test
+    func movingSplitPointInsideMergedDeletedRangeKeepsItUnchanged() {
+        let move = VideoSplitEditor.movingSplitPoint(
+            12, to: 14, trim: 0...20, splitPoints: [5, 12], removedRanges: [5...20])
+
+        #expect(move?.splitPoints == [5, 14])
+        #expect(move?.removedRanges == [5...20])
+    }
+
+    @Test
     func removedDurationBeforeCountsOnlyDeletedTimeAheadOfThePoint() {
         let removed = [5.0...12.0, 15.0...18.0]
 
