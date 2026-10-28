@@ -3,7 +3,7 @@
 //  VideoEditorKit
 //
 //  Created by Adriano Souza Costa on 23.03.2026.
-// Update 28 Oct
+//
 
 import AVFoundation
 import CoreImage
