@@ -26,6 +26,7 @@ struct ThumbnailsSliderView: View {
     @State private var viewportWidth: CGFloat = 0
     @State private var scrollOffsetX: CGFloat = 0
     @State private var scrollPosition = ScrollPosition(edge: .leading)
+    @State private var isUserScrollingTimeline = false
 
     // MARK: - Private Properties
 
@@ -59,11 +60,15 @@ struct ThumbnailsSliderView: View {
             }
         } badge: { size, badgeWidth in
             if let video {
-                playheadBadge(
-                    size: size,
-                    badgeWidth: badgeWidth,
-                    video: video
-                )
+                ZStack(alignment: .topLeading) {
+                    timelineRuler(size: size, video: video)
+
+                    playheadBadge(
+                        size: size,
+                        badgeWidth: badgeWidth,
+                        video: video
+                    )
+                }
             }
         } track: { size in
             timelineTrack(size)
@@ -99,7 +104,7 @@ struct ThumbnailsSliderView: View {
     private let handleInnerInset: CGFloat = 4
     private let playheadLineWidth: CGFloat = 2
     private let playheadLabelHeight: CGFloat = 28
-    private let timelineHeight: CGFloat = 60
+    private let timelineHeight: CGFloat = 72
     private let timelineCornerRadius = RangeSliderMaskedRegionStyle.cornerRadius
 
     // MARK: - Initializer
@@ -204,15 +209,11 @@ extension ThumbnailsSliderView {
 
         zoomLevel = zoomLevels[newIndex]
 
-        guard zoomLevel > 1 else {
-            scrollOffsetX = 0
-            return
-        }
-
         guard let video else { return }
 
+        // The playhead is fixed in the centre, so the scroll offset equals the playhead's content x.
         let metrics = timelineMetrics(for: video, width: viewportWidth * zoomLevel)
-        let target = metrics.playbackPositionX() - (viewportWidth / 2)
+        let target = metrics.playbackPositionX()
 
         scrollToContentX(target, animated: false)
         Task { @MainActor in
@@ -220,26 +221,43 @@ extension ThumbnailsSliderView {
         }
     }
 
+    /// Keeps the timeline scrolled so the current time sits under the fixed centre playhead.
     private func keepPlayheadVisible(in video: Video) {
-        guard zoomLevel > 1, viewportWidth > 0 else { return }
+        guard viewportWidth > 0, !isUserScrollingTimeline else { return }
 
         let metrics = timelineMetrics(for: video, width: viewportWidth * zoomLevel)
-        let playheadX = metrics.playbackPositionX()
-        let margin: CGFloat = 24
+        scrollToContentX(metrics.playbackPositionX(), animated: false)
+    }
 
-        guard
-            playheadX < scrollOffsetX + margin
-                || playheadX > scrollOffsetX + viewportWidth - margin
-        else { return }
+    private func scrubFromScroll(offset: CGFloat, video: Video, width: CGFloat) {
+        let outputRange = video.outputRangeDuration
+        let scrubTime = playheadTime(forX: offset, video: video, width: width)
 
-        scrollToContentX(
-            playheadX - (viewportWidth / 2),
-            animated: !isScrubbingPlaybackIndicator
-        )
+        currentTime = scrubTime
+        onPlaybackScrubChanged(scrubTime, outputRange)
+    }
+
+    private func handleTimelineScrollPhase(
+        from oldPhase: ScrollPhase,
+        to newPhase: ScrollPhase
+    ) {
+        guard let video else { return }
+
+        switch (oldPhase.isScrolling, newPhase.isScrolling) {
+        case (false, true):
+            isUserScrollingTimeline = true
+            onPlaybackScrubStarted(video.outputRangeDuration)
+        case (true, false):
+            guard isUserScrollingTimeline else { return }
+            isUserScrollingTimeline = false
+            onPlaybackScrubEnded(currentTime, video.outputRangeDuration)
+        default:
+            break
+        }
     }
 
     private func scrollToContentX(_ x: CGFloat, animated: Bool) {
-        let maximumOffset = max((viewportWidth * zoomLevel) - viewportWidth, 0)
+        let maximumOffset = max(viewportWidth * zoomLevel, 0)
         let target = min(max(x, 0), maximumOffset)
 
         if animated {
@@ -337,23 +355,27 @@ extension ThumbnailsSliderView {
             height: viewportSize.height
         )
 
-        return Group {
-            if zoomLevel > 1 {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    trackContent(contentSize)
-                        .frame(width: contentSize.width, height: contentSize.height)
-                }
-                .scrollPosition($scrollPosition)
-                .scrollClipDisabled()
-                .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.contentOffset.x
-                } action: { _, newOffset in
-                    scrollOffsetX = newOffset
-                }
-                .frame(width: viewportSize.width, height: viewportSize.height)
-            } else {
-                trackContent(contentSize)
-            }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            trackContent(contentSize)
+                .frame(width: contentSize.width, height: contentSize.height)
+                .padding(.horizontal, viewportSize.width / 2)
+        }
+        .scrollPosition($scrollPosition)
+        .scrollClipDisabled()
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.x
+        } action: { _, newOffset in
+            scrollOffsetX = newOffset
+
+            guard isUserScrollingTimeline, let video else { return }
+            scrubFromScroll(offset: newOffset, video: video, width: contentSize.width)
+        }
+        .onScrollPhaseChange { oldPhase, newPhase in
+            handleTimelineScrollPhase(from: oldPhase, to: newPhase)
+        }
+        .frame(width: viewportSize.width, height: viewportSize.height)
+        .overlay {
+            fixedPlayhead(size: viewportSize)
         }
         .simultaneousGesture(
             MagnifyGesture()
@@ -368,6 +390,11 @@ extension ThumbnailsSliderView {
         .onAppear {
             setVideoRange()
             viewportWidth = viewportSize.width
+
+            Task { @MainActor in
+                guard let video else { return }
+                keepPlayheadVisible(in: video)
+            }
         }
         .onChange(of: viewportSize.width) { _, newWidth in
             viewportWidth = newWidth
@@ -375,6 +402,16 @@ extension ThumbnailsSliderView {
         .task(id: thumbnailRequestID(for: viewportSize)) {
             onRequestThumbnails(viewportSize, zoomLevel)
         }
+    }
+
+    /// CapCut style: the playhead never moves, the timeline scrolls underneath it.
+    private func fixedPlayhead(size: CGSize) -> some View {
+        Capsule(style: .continuous)
+            .fill(.white)
+            .shadow(color: .black.opacity(0.4), radius: 2)
+            .frame(width: playheadLineWidth, height: size.height + 10)
+            .position(x: size.width / 2, y: size.height / 2)
+            .allowsHitTesting(false)
     }
 
     private func trackContent(_ size: CGSize) -> some View {
@@ -398,11 +435,6 @@ extension ThumbnailsSliderView {
 
                 splitHandles(size: size, video: video)
 
-                playbackIndicator(
-                    size: size,
-                    video: video
-                )
-                .zIndex(999)
             }
         }
         .coordinateSpace(name: Self.trackCoordinateSpace)
@@ -438,10 +470,10 @@ extension ThumbnailsSliderView {
         .contentShape(Rectangle())
         .gesture(
             trackScrubGesture(width: size.width),
-            including: zoomLevel > 1 ? .subviews : .all
+            including: .subviews
         )
         .onTapGesture { location in
-            guard zoomLevel > 1, let video else { return }
+            guard let video else { return }
             seekPlayhead(toX: location.x, video: video, width: size.width)
         }
     }
@@ -745,6 +777,64 @@ extension ThumbnailsSliderView {
         )
     }
 
+    /// Scrolling time ruler drawn in the badge slot, aligned with the track and the fixed playhead.
+    private func timelineRuler(
+        size: CGSize,
+        video: Video
+    ) -> some View {
+        let contentWidth = size.width * zoomLevel
+        let metrics = timelineMetrics(for: video, width: contentWidth)
+        let rate = Double(max(video.rate, 0.001))
+        let clipStart = rangeDuration.lowerBound
+        let clipDuration = (rangeDuration.upperBound - rangeDuration.lowerBound) / rate
+        let pointsPerSecond =
+            contentWidth / CGFloat(max(video.originalDuration, 0.001)) * CGFloat(rate)
+        let step = Self.rulerStep(pointsPerSecond: pointsPerSecond)
+        let offset = scrollOffsetX
+        let centerX = size.width / 2
+
+        return Canvas { context, canvasSize in
+            guard clipDuration > 0, step > 0 else { return }
+
+            let halfStep = step / 2
+            let count = Int(clipDuration / halfStep)
+
+            for index in 0...count {
+                let clipTime = Double(index) * halfStep
+                let contentX = metrics.positionX(forSourceTime: clipStart + clipTime * rate)
+                let positionX = centerX + (contentX - offset)
+
+                guard positionX > -40, positionX < canvasSize.width + 40 else { continue }
+
+                let isMajor = index % 2 == 0
+                var tick = Path()
+                tick.move(to: CGPoint(x: positionX, y: canvasSize.height))
+                tick.addLine(
+                    to: CGPoint(x: positionX, y: canvasSize.height - (isMajor ? 7 : 4))
+                )
+                context.stroke(tick, with: .color(.secondary.opacity(0.7)), lineWidth: 1)
+
+                if isMajor {
+                    context.draw(
+                        Text(timelineTickLabel(clipTime))
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.secondary),
+                        at: CGPoint(x: positionX + 3, y: 8),
+                        anchor: .leading
+                    )
+                }
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private static func rulerStep(pointsPerSecond: CGFloat) -> Double {
+        let candidates: [Double] = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]
+        return candidates.first { CGFloat($0) * pointsPerSecond >= 56 } ?? 600
+    }
+
     private func playbackIndicator(
         size: CGSize,
         video: Video
@@ -767,15 +857,8 @@ extension ThumbnailsSliderView {
         badgeWidth: CGFloat,
         video: Video
     ) -> some View {
-        let metrics = timelineMetrics(for: video, width: size.width * zoomLevel)
-        let clampedX: CGFloat = {
-            guard zoomLevel > 1 else { return metrics.badgePositionX(for: badgeWidth) }
-
-            let halfWidth = max(badgeWidth / 2, 24)
-            let visibleX = metrics.playbackPositionX() - scrollOffsetX
-
-            return min(max(visibleX, halfWidth), max(size.width - halfWidth, halfWidth))
-        }()
+        // Left aligned like CapCut. A fixed x is used because the badge slot also hosts the ruler.
+        let clampedX: CGFloat = 52
         let playbackRange = video.outputRangeDuration
         let removedBeforePlayhead =
             VideoSplitEditor.removedDuration(
@@ -946,4 +1029,18 @@ extension ThumbnailsSliderView {
         onPlaybackScrubChanged: { _, _ in },
         onPlaybackScrubEnded: { _, _ in }
     )
+}
+
+
+private func timelineTickLabel(_ seconds: Double) -> String {
+    let safeSeconds = max(seconds, 0)
+    let minutes = Int(safeSeconds) / 60
+    let wholeSeconds = Int(safeSeconds) % 60
+
+    if safeSeconds.rounded() == safeSeconds {
+        return String(format: "%d:%02d", minutes, wholeSeconds)
+    }
+
+    let tenths = Int(((safeSeconds - safeSeconds.rounded(.down)) * 10).rounded())
+    return String(format: "%d:%02d.%d", minutes, wholeSeconds, tenths)
 }
