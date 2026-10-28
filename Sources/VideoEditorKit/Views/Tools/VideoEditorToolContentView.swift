@@ -102,7 +102,10 @@ struct VideoEditorToolContentView: View {
                 }
             )
         case .cut:
-            EmptyView()
+            SplitToolView(
+                editorViewModel: editorViewModel,
+                videoPlayer: videoPlayer
+            )
         }
     }
 

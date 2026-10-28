@@ -41,6 +41,30 @@ enum VideoSplitEditor {
         }
     }
 
+    /// One part of the trimmed video and whether it is deleted. Used by timeline UIs.
+    struct SegmentState: Equatable, Identifiable {
+        let index: Int
+        let range: ClosedRange<Double>
+        let isRemoved: Bool
+
+        var id: Int { index }
+    }
+
+    /// Ordered segments inside `trim`, each marked as kept or deleted.
+    static func segmentStates(
+        in trim: ClosedRange<Double>,
+        splitPoints: [Double],
+        removedRanges: [ClosedRange<Double>]
+    ) -> [SegmentState] {
+        segments(in: trim, splitPoints: splitPoints).enumerated().map { index, range in
+            SegmentState(
+                index: index,
+                range: range,
+                isRemoved: isRemoved((range.lowerBound + range.upperBound) / 2, in: removedRanges)
+            )
+        }
+    }
+
     /// Returns a new list of split points when `sourceTime` is a valid place to split.
     static func splitting(
         at sourceTime: Double,

@@ -43,6 +43,20 @@ final class EditorViewModel {
 
     }
 
+    struct SplitActionAvailability: Equatable {
+
+        // MARK: - Public Properties
+
+        static let none = Self()
+
+        var canSplit = false
+        var canDelete = false
+        var canRestorePart = false
+        var canJoin = false
+        var hasRemovedSegments = false
+
+    }
+
     private enum Constants {
         static let numericTolerance = 0.001
         static let exportPresentationDelay = Duration.milliseconds(200)
@@ -402,6 +416,45 @@ final class EditorViewModel {
         splitRevision += 1
         remapTranscriptDocumentIfNeeded()
         markEditingConfigurationChanged()
+    }
+
+    /// Which split actions make sense at the playhead. Drives enabled state of the split toolbar.
+    func splitActionAvailability(timelineTime: Double) -> SplitActionAvailability {
+        guard let currentVideo else { return .none }
+
+        let sourceTime = PlaybackTimeMapping.sourceTime(
+            forTimelineTime: timelineTime,
+            rate: currentVideo.rate,
+            originalDuration: currentVideo.originalDuration
+        )
+
+        return SplitActionAvailability(
+            canSplit: VideoSplitEditor.splitting(
+                at: sourceTime,
+                trim: currentVideo.rangeDuration,
+                splitPoints: currentVideo.splitPoints,
+                removedRanges: currentVideo.removedRanges
+            ) != nil,
+            canDelete: VideoSplitEditor.removingSegment(
+                containing: sourceTime,
+                trim: currentVideo.rangeDuration,
+                splitPoints: currentVideo.splitPoints,
+                removedRanges: currentVideo.removedRanges
+            ) != nil,
+            canRestorePart: VideoSplitEditor.restoringSegment(
+                containing: sourceTime,
+                trim: currentVideo.rangeDuration,
+                splitPoints: currentVideo.splitPoints,
+                removedRanges: currentVideo.removedRanges
+            ) != nil,
+            canJoin: VideoSplitEditor.joiningSegment(
+                containing: sourceTime,
+                trim: currentVideo.rangeDuration,
+                splitPoints: currentVideo.splitPoints,
+                removedRanges: currentVideo.removedRanges
+            ) != nil,
+            hasRemovedSegments: !currentVideo.removedRanges.isEmpty
+        )
     }
 
     /// Splits the video at the given playhead position (rate-scaled timeline seconds).

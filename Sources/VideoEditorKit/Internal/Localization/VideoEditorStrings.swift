@@ -211,6 +211,15 @@ enum VideoEditorStrings {
     static var splitJoinAction: String {
         localized("editor.split.join.title", defaultValue: "Join")
     }
+    static var splitHint: String {
+        localized(
+            "editor.split.hint",
+            defaultValue: "Scroll the timeline to place the playhead, then tap Split."
+        )
+    }
+    static var splitPointAccessibility: String {
+        localized("editor.split.point.accessibility", defaultValue: "Split point. Drag to adjust.")
+    }
     static var timelineZoomIn: String {
         localized("editor.timeline.zoom-in", defaultValue: "Zoom in timeline")
     }
