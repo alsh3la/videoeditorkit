@@ -102,33 +102,62 @@ struct VideoEditorTrimSectionView: View {
                 splitPoints: video.splitPoints,
                 removedRanges: video.removedRanges
             ) != nil
-        let canRestore = !video.removedRanges.isEmpty
+        let canRestorePart =
+            VideoSplitEditor.restoringSegment(
+                containing: sourceTime,
+                trim: video.rangeDuration,
+                splitPoints: video.splitPoints,
+                removedRanges: video.removedRanges
+            ) != nil
+        let canJoin =
+            VideoSplitEditor.joiningSegment(
+                containing: sourceTime,
+                trim: video.rangeDuration,
+                splitPoints: video.splitPoints,
+                removedRanges: video.removedRanges
+            ) != nil
+        let hasRemovedParts = !video.removedRanges.isEmpty
+        let showsRestoreAll = hasRemovedParts && !(canRestorePart && video.removedRanges.count == 1)
 
-        return HStack(spacing: 8) {
-            Button(action: handleSplitTap) {
-                Label(VideoEditorStrings.splitAction, systemImage: "scissors")
-            }
-            .disabled(!canSplit)
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Button(action: handleSplitTap) {
+                    Label(VideoEditorStrings.splitAction, systemImage: "scissors")
+                }
+                .disabled(!canSplit)
 
-            Button(action: handleDeleteSegmentTap) {
-                Label(VideoEditorStrings.splitDeleteAction, systemImage: "trash")
-            }
-            .disabled(!canDelete)
+                if canRestorePart {
+                    Button(action: handleRestorePartTap) {
+                        Label(
+                            VideoEditorStrings.splitRestorePartAction,
+                            systemImage: "arrow.uturn.backward"
+                        )
+                    }
+                } else {
+                    Button(action: handleDeleteSegmentTap) {
+                        Label(VideoEditorStrings.splitDeleteAction, systemImage: "trash")
+                    }
+                    .disabled(!canDelete)
+                }
 
-            Spacer(minLength: 0)
+                Button(action: handleJoinTap) {
+                    Label(VideoEditorStrings.splitJoinAction, systemImage: "link")
+                }
+                .disabled(!canJoin)
 
-            if canRestore {
-                Button(action: handleRestoreSegmentsTap) {
-                    Label(
-                        VideoEditorStrings.splitRestoreAction,
-                        systemImage: "arrow.uturn.backward"
-                    )
+                if showsRestoreAll {
+                    Button(action: handleRestoreSegmentsTap) {
+                        Label(
+                            VideoEditorStrings.splitRestoreAllAction,
+                            systemImage: "arrow.counterclockwise"
+                        )
+                    }
                 }
             }
+            .padding(.horizontal, 4)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .padding(.horizontal, 4)
     }
 
     private func handlePlayPauseTap() {
@@ -199,6 +228,22 @@ struct VideoEditorTrimSectionView: View {
         videoPlayer.endScrubbing(at: targetTime, in: range)
     }
 
+    private func handleRestorePartTap() {
+        let playheadTime = videoPlayer.currentTime
+
+        videoPlayer.pause()
+        editorViewModel.restoreSegmentAtPlayhead(timelineTime: playheadTime)
+        syncPlayerRemovedRanges()
+    }
+
+    private func handleJoinTap() {
+        let playheadTime = videoPlayer.currentTime
+
+        videoPlayer.pause()
+        editorViewModel.joinSegmentAtPlayhead(timelineTime: playheadTime)
+        syncPlayerRemovedRanges()
+    }
+
     private func handleRestoreSegmentsTap() {
         videoPlayer.pause()
         editorViewModel.restoreRemovedSegments()
@@ -210,10 +255,11 @@ struct VideoEditorTrimSectionView: View {
         videoPlayer.updateRemovedRanges(from: video)
     }
 
-    private func requestThumbnails(_ size: CGSize) {
+    private func requestThumbnails(_ size: CGSize, _ zoomLevel: CGFloat) {
         editorViewModel.refreshThumbnailsIfNeeded(
             containerSize: size,
-            displayScale: displayScale
+            displayScale: displayScale,
+            thumbnailWidthScale: zoomLevel
         )
     }
 
