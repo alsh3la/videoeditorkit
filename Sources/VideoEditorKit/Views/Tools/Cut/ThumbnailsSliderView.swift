@@ -25,6 +25,7 @@ struct ThumbnailsSliderView: View {
     // MARK: - Private Properties
 
     private let isPlaying: Bool
+    private let splitRevision: Int
     private let isChangeState: Bool?
     private let maximumSelectionDuration: Double?
     private let onPlayPauseTapped: () -> Void
@@ -93,6 +94,7 @@ struct ThumbnailsSliderView: View {
         _ currentTime: Binding<Double>,
         video: Binding<Video?>,
         isPlaying: Bool,
+        splitRevision: Int = 0,
         isChangeState: Bool? = nil,
         maximumSelectionDuration: Double? = nil,
         onPlayPauseTapped: @escaping () -> Void,
@@ -113,6 +115,7 @@ struct ThumbnailsSliderView: View {
         )
 
         self.isPlaying = isPlaying
+        self.splitRevision = splitRevision
         self.isChangeState = isChangeState
         self.maximumSelectionDuration = maximumSelectionDuration
         self.onPlayPauseTapped = onPlayPauseTapped
@@ -315,30 +318,43 @@ extension ThumbnailsSliderView {
         size: CGSize,
         video: Video
     ) -> some View {
-        let duration = max(video.originalDuration, 0.001)
+        let metrics = timelineMetrics(for: video, width: size.width)
+        let removedRanges = VideoSplitEditor.effectiveRemovedRanges(
+            trim: rangeDuration,
+            removedRanges: video.removedRanges
+        )
+        let splitPoints = video.splitPoints.filter {
+            $0 > rangeDuration.lowerBound && $0 < rangeDuration.upperBound
+        }
 
-        return ZStack(alignment: .leading) {
-            ForEach(Array(video.removedRanges.enumerated()), id: \.offset) { _, range in
+        return ZStack(alignment: .topLeading) {
+            ForEach(Array(removedRanges.enumerated()), id: \.offset) { _, range in
+                let startX = metrics.positionX(forSourceTime: range.lowerBound)
+                let endX = metrics.positionX(forSourceTime: range.upperBound)
+                let width = max(endX - startX, 0)
+
                 Rectangle()
-                    .fill(Color.black.opacity(0.6))
-                    .frame(
-                        width: max(
-                            CGFloat((range.upperBound - range.lowerBound) / duration) * size.width,
-                            0
-                        ),
-                        height: size.height
-                    )
-                    .offset(x: CGFloat(range.lowerBound / duration) * size.width)
+                    .fill(Color.black.opacity(0.7))
+                    .overlay {
+                        if width > 22 {
+                            Image(systemName: "trash.slash")
+                                .font(.caption2)
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
+                    }
+                    .frame(width: width, height: size.height)
+                    .offset(x: startX)
             }
 
-            ForEach(Array(video.splitPoints.enumerated()), id: \.offset) { _, point in
+            ForEach(Array(splitPoints.enumerated()), id: \.offset) { _, point in
                 Rectangle()
                     .fill(Color.white)
                     .frame(width: 2, height: size.height)
-                    .offset(x: CGFloat(point / duration) * size.width - 1)
+                    .offset(x: metrics.positionX(forSourceTime: point) - 1)
             }
         }
-        .frame(width: size.width, height: size.height, alignment: .leading)
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .id(splitRevision)
         .allowsHitTesting(false)
     }
 
@@ -366,8 +382,20 @@ extension ThumbnailsSliderView {
         let metrics = timelineMetrics(for: video, width: size.width)
         let clampedX = metrics.badgePositionX(for: badgeWidth)
         let playbackRange = video.outputRangeDuration
-        let currentClipTime = max(currentTime.clamped(to: playbackRange) - playbackRange.lowerBound, 0)
-        let clipDuration = playbackRange.upperBound - playbackRange.lowerBound
+        let removedBeforePlayhead =
+            VideoSplitEditor.removedDuration(
+                before: sourceTime(for: video, timelineTime: currentTime),
+                trim: video.rangeDuration,
+                removedRanges: video.removedRanges
+            ) / Double(max(video.rate, 0.001))
+        let currentClipTime = max(
+            currentTime.clamped(to: playbackRange) - playbackRange.lowerBound - removedBeforePlayhead,
+            0
+        )
+        let clipDuration =
+            video.removedRanges.isEmpty
+            ? playbackRange.upperBound - playbackRange.lowerBound
+            : video.totalDuration
 
         return Text(
             "\(currentClipTime.formatterPreciseTimeString()) / \(clipDuration.formatterPreciseTimeString())"
