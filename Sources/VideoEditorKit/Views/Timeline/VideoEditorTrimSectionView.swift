@@ -41,7 +41,6 @@ struct VideoEditorTrimSectionView: View {
                     onPlayPauseTapped: handlePlayPauseTap,
                     onChangeTimeValue: handleTrimRangeChange,
                     onRequestThumbnails: requestThumbnails,
-                    onMoveSplitPoint: handleMoveSplitPoint,
                     onTrimRangeInteractionStarted: {
                         videoPlayer.beginPlaybackInteraction()
                     },
@@ -65,7 +64,8 @@ struct VideoEditorTrimSectionView: View {
                             at: time,
                             in: range
                         )
-                    }
+                    },
+                    onMoveSplitPoint: handleMoveSplitPoint
                 )
             }
         }
