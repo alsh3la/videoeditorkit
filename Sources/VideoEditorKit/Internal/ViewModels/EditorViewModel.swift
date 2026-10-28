@@ -55,6 +55,9 @@ final class EditorViewModel {
     let cropPresentationState = EditorCropPresentationState()
 
     var currentVideo: Video?
+    /// Bumped whenever split points or deleted segments change so timeline views refresh.
+    /// `Video` compares equal by `id`, so assigning an edited copy alone is not a reliable trigger.
+    private(set) var splitRevision = 0
     var frames = VideoFrames()
     var transcriptState: TranscriptFeatureState = .idle
     var transcriptFeatureState: TranscriptFeaturePersistenceState = .idle
@@ -390,6 +393,7 @@ final class EditorViewModel {
             in: &currentVideo
         )
         self.currentVideo = currentVideo
+        splitRevision += 1
         remapTranscriptDocumentIfNeeded()
         markEditingConfigurationChanged()
     }
@@ -409,6 +413,7 @@ final class EditorViewModel {
         guard currentVideo.split(atSourceTime: sourceTime) else { return false }
 
         self.currentVideo = currentVideo
+        splitRevision += 1
         markEditingConfigurationChanged()
         return true
     }
@@ -428,6 +433,7 @@ final class EditorViewModel {
         guard currentVideo.deleteSegment(atSourceTime: sourceTime) else { return false }
 
         self.currentVideo = currentVideo
+        splitRevision += 1
         markEditingConfigurationChanged()
         return true
     }
@@ -443,6 +449,7 @@ final class EditorViewModel {
             tolerance: Constants.numericTolerance
         )
         self.currentVideo = currentVideo
+        splitRevision += 1
         markEditingConfigurationChanged()
     }
 
